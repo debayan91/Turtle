@@ -50,7 +50,31 @@ async def run_agent():
 
     console.print("[bold green]Turtle Agent initialized (Fast CLI Mode)[/bold green]")
     if not state.messages:
-        await state.append_message("system", "You are Turtle, an ultra-fast local CLI coding agent. You can use bash_command to execute tools.")
+        sys_prompt = "You are Turtle, an ultra-fast local CLI coding agent. You can use bash_command to execute tools.\n"
+        
+        # Context Ingestion
+        # Scan common context file locations
+        context_paths = ["AGENTS.md", ".pi/prompts"]
+        for c_path in context_paths:
+            if os.path.exists(c_path):
+                if os.path.isdir(c_path):
+                    for root, _, files in os.walk(c_path):
+                        for file in files:
+                            if file.endswith(".md"):
+                                fpath = os.path.join(root, file)
+                                try:
+                                    with open(fpath, "r", encoding="utf-8") as f:
+                                        sys_prompt += f"\n--- Context from {fpath} ---\n{f.read()}\n"
+                                except Exception:
+                                    pass
+                else:
+                    try:
+                        with open(c_path, "r", encoding="utf-8") as f:
+                            sys_prompt += f"\n--- Context from {c_path} ---\n{f.read()}\n"
+                    except Exception:
+                        pass
+        
+        await state.append_message("system", sys_prompt)
 
     while True:
         try:
@@ -61,6 +85,25 @@ async def run_agent():
 
         if not user_input.strip():
             continue
+
+        # Slash Commands
+        if user_input.startswith("/"):
+            cmd = user_input.strip().split()[0].lower()
+            if cmd == "/help":
+                console.print("[bold cyan]Available Commands:[/bold cyan]\n/help - Show this help\n/clear - Clear session history\n/exit or /quit - Exit agent")
+                continue
+            elif cmd == "/clear":
+                state.messages = []
+                if os.path.exists(STATE_FILE):
+                    os.remove(STATE_FILE)
+                # Re-initialize system prompt
+                console.print("[bold yellow]Session cleared. Restart agent to re-load context.[/bold yellow]")
+                continue
+            elif cmd in ("/exit", "/quit"):
+                break
+            else:
+                console.print(f"[bold red]Unknown command: {cmd}[/bold red]")
+                continue
 
         await state.append_message("user", user_input)
         
