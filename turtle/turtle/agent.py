@@ -189,7 +189,29 @@ async def run_agent():
         if user_input.startswith("/"):
             cmd = user_input.strip().split()[0].lower()
             if cmd == "/help":
-                console.print("[bold cyan]Available Commands:[/bold cyan]\n/help - Show this help\n/clear - Clear session history\n/compact - Summarize conversation to save context window\n/exit or /quit - Exit agent")
+                console.print("[bold cyan]Available Commands:[/bold cyan]\n/help - Show this help\n/model - Switch model (e.g. /model deepseek:deepseek-coder)\n/clear - Clear session history\n/compact - Summarize conversation to save context window\n/exit or /quit - Exit agent")
+                continue
+            elif cmd == "/model":
+                parts = user_input.strip().split()
+                if len(parts) < 2:
+                    console.print(f"[bold cyan]Current model:[/bold cyan] {client.provider}:{client.model}")
+                    continue
+                
+                model_str = parts[1]
+                if ":" in model_str:
+                    provider, model = model_str.split(":", 1)
+                else:
+                    provider, model = "openai", model_str
+                
+                try:
+                    # Initialize new client before closing old one to catch Auth errors early
+                    new_client = LLMClient(provider=provider, model=model)
+                    await client.close()
+                    client = new_client
+                    console.print(f"[bold green]Switched model to {provider}:{model}[/bold green]")
+                except Exception as e:
+                    console.print(f"[bold red]Failed to switch model: {e}[/bold red]")
+                
                 continue
             elif cmd == "/clear":
                 state.messages = []

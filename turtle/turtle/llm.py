@@ -1,4 +1,5 @@
 import os
+import json
 import httpx
 import msgspec
 from typing import AsyncGenerator, Dict, Any, List, Optional
@@ -24,13 +25,45 @@ class Choice(msgspec.Struct):
 class ChatCompletionChunk(msgspec.Struct):
     choices: List[Choice]
 
+PROVIDERS = {
+    "openai": {"env": "OPENAI_API_KEY", "url": "https://api.openai.com/v1"},
+    "deepseek": {"env": "DEEPSEEK_API_KEY", "url": "https://api.deepseek.com/v1"},
+    "openrouter": {"env": "OPENROUTER_API_KEY", "url": "https://openrouter.ai/api/v1"},
+    "groq": {"env": "GROQ_API_KEY", "url": "https://api.groq.com/openai/v1"},
+    "together": {"env": "TOGETHER_API_KEY", "url": "https://api.together.xyz/v1"},
+    "anthropic": {"env": "ANTHROPIC_API_KEY", "url": "https://api.anthropic.com/v1"} # Note: Anthropic uses a different API schema natively, but included for translation completeness.
+}
+
 class LLMClient:
-    def __init__(self, api_key: Optional[str] = None, base_url: str = "https://api.openai.com/v1"):
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
-        if not self.api_key:
-            raise ValueError("OPENAI_API_KEY environment variable is missing.")
+    def __init__(self, provider: str = "openai", model: str = "gpt-4o-mini", api_key: Optional[str] = None, base_url: Optional[str] = None):
+        self.provider = provider
+        self.model = model
         
-        self.base_url = base_url
+        provider_config = PROVIDERS.get(self.provider, {})
+        
+        # 1. Resolve API Key
+        self.api_key = api_key
+        if not self.api_key:
+            # Try auth.json
+            auth_file = os.path.expanduser("~/.pi/agent/auth.json")
+            if os.path.exists(auth_file):
+                try:
+                    with open(auth_file, "r") as f:
+                        auth_data = json.load(f)
+                        if self.provider in auth_data:
+                            self.api_key = auth_data[self.provider].get("key")
+                except Exception:
+                    pass
+            
+            # Try Environment Variable
+            if not self.api_key and "env" in provider_config:
+                self.api_key = os.getenv(provider_config["env"])
+                
+        if not self.api_key:
+            raise ValueError(f"API key for provider '{self.provider}' is missing. Please set it in ~/.pi/agent/auth.json or via environment variable.")
+        
+        # 2. Resolve Base URL
+        self.base_url = base_url or provider_config.get("url", "https://api.openai.com/v1")
         
         # Keep connection open and persistent, use HTTP/2
         self.client = httpx.AsyncClient(
@@ -46,7 +79,7 @@ class LLMClient:
 
     async def stream_chat(self, messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]] = None) -> AsyncGenerator[ChatCompletionChunk, None]:
         payload = {
-            "model": "gpt-4o-mini",
+            "model": self.model,
             "messages": messages,
             "stream": True,
         }
