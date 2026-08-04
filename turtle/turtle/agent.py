@@ -4,6 +4,7 @@ import os
 from prompt_toolkit import PromptSession
 from prompt_toolkit.patch_stdout import patch_stdout
 from rich.console import Console
+import re
 
 from turtle.llm import LLMClient
 from turtle.tools import TOOLS_SCHEMA, execute_tool
@@ -47,6 +48,65 @@ Use this EXACT format:
 - [Or "(none)" if not applicable]
 
 Keep each section concise. Preserve exact file paths, function names, and error messages."""
+
+def discover_skills() -> str:
+    skills = []
+    skill_roots = [
+        os.path.expanduser("~/.gemini/config/skills"),
+        os.path.join(os.getcwd(), ".agents", "skills"),
+        os.path.join(os.getcwd(), ".pi", "skills")
+    ]
+    
+    for root_dir in skill_roots:
+        if not os.path.exists(root_dir):
+            continue
+        for dirpath, _, filenames in os.walk(root_dir):
+            for filename in filenames:
+                if filename == "SKILL.md":
+                    full_path = os.path.join(dirpath, filename)
+                    try:
+                        with open(full_path, "r", encoding="utf-8") as f:
+                            content = f.read()
+                            
+                        match = re.match(r"^---\n(.*?)\n---", content, re.DOTALL)
+                        if match:
+                            frontmatter = match.group(1)
+                            name_match = re.search(r"^name:\s*(.+)$", frontmatter, re.MULTILINE)
+                            desc_match = re.search(r"^description:\s*(.+)$", frontmatter, re.MULTILINE)
+                            
+                            name = name_match.group(1).strip() if name_match else os.path.basename(dirpath)
+                            description = desc_match.group(1).strip() if desc_match else ""
+                            
+                            if description:
+                                skills.append({
+                                    "name": name,
+                                    "description": description,
+                                    "location": full_path
+                                })
+                    except Exception:
+                        pass
+    
+    if not skills:
+        return ""
+        
+    lines = [
+        "\n\nThe following skills provide specialized instructions for specific tasks.",
+        "Use the bash_command tool to execute `cat <location>` to load a skill's file when the task matches its description.",
+        "When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md) and use that absolute path in tool commands.",
+        "",
+        "<available_skills>"
+    ]
+    
+    for skill in skills:
+        lines.append("  <skill>")
+        lines.append(f"    <name>{skill['name']}</name>")
+        lines.append(f"    <description>{skill['description']}</description>")
+        lines.append(f"    <location>{skill['location']}</location>")
+        lines.append("  </skill>")
+    
+    lines.append("</available_skills>")
+    return "\n".join(lines)
+
 class AgentState:
     def __init__(self):
         self.messages = []
@@ -109,6 +169,9 @@ async def run_agent():
                             sys_prompt += f"\n--- Context from {c_path} ---\n{f.read()}\n"
                     except Exception:
                         pass
+        
+        # Skills Discovery & Injection
+        sys_prompt += discover_skills()
         
         await state.append_message("system", sys_prompt)
 
