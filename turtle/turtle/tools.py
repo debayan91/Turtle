@@ -1,20 +1,113 @@
 import asyncio
-from typing import Dict, Any, List
 import json
+import os
+import re
+from typing import Dict, Any, List
 
 TOOLS_SCHEMA = [
     {
         "type": "function",
         "function": {
-            "name": "bash_command",
+            "name": "read",
+            "description": "Reads a file's content. Use offset and limit for large files to read specific sections.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute or relative path to the file"},
+                    "offset": {"type": "integer", "description": "Line number to start reading from (1-indexed)"},
+                    "limit": {"type": "integer", "description": "Maximum number of lines to read"}
+                },
+                "required": ["path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "write",
+            "description": "Create a new file or overwrite an existing one.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute or relative path to the file"},
+                    "content": {"type": "string", "description": "Content to write"}
+                },
+                "required": ["path", "content"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "edit",
+            "description": "Replaces specific text within a file. targetContent must exactly match the existing file content.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute or relative path to the file"},
+                    "targetContent": {"type": "string", "description": "The exact string to be replaced, including whitespace and indentation"},
+                    "replacementContent": {"type": "string", "description": "The content to replace targetContent with"},
+                    "startLine": {"type": "integer", "description": "The starting line number of the chunk (1-indexed)"},
+                    "endLine": {"type": "integer", "description": "The ending line number of the chunk (1-indexed)"}
+                },
+                "required": ["path", "targetContent", "replacementContent", "startLine", "endLine"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ls",
+            "description": "List directory contents",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute or relative path to the directory"}
+                },
+                "required": ["path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "find",
+            "description": "Recursively searches for files by name/glob.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Directory to search in"},
+                    "pattern": {"type": "string", "description": "File name pattern or glob to match (e.g. *.ts)"}
+                },
+                "required": ["path", "pattern"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "grep",
+            "description": "Recursively searches for text within files using regex.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Directory to search in"},
+                    "pattern": {"type": "string", "description": "Regex pattern to search for"},
+                    "include": {"type": "string", "description": "Glob pattern to filter files (e.g. *.py)"}
+                },
+                "required": ["path", "pattern"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "bash",
             "description": "Execute a bash command.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "command": {
-                        "type": "string",
-                        "description": "The command to execute in the terminal"
-                    }
+                    "command": {"type": "string", "description": "The command to execute in the terminal"}
                 },
                 "required": ["command"]
             }
@@ -22,25 +115,163 @@ TOOLS_SCHEMA = [
     }
 ]
 
+MAX_OUTPUT_CHARS = 100000  # ~100kb
+MAX_LINES = 1000
+
+def truncate_output(text: str) -> str:
+    if len(text) > MAX_OUTPUT_CHARS:
+        text = text[:MAX_OUTPUT_CHARS] + f"\n... [Truncated: exceeded {MAX_OUTPUT_CHARS} chars] ..."
+    
+    lines = text.split("\n")
+    if len(lines) > MAX_LINES:
+        text = "\n".join(lines[:MAX_LINES]) + f"\n... [Truncated: exceeded {MAX_LINES} lines] ..."
+        
+    return text
+
+def _resolve_path(path_str: str) -> str:
+    return os.path.abspath(os.path.expanduser(path_str))
+
+async def handle_read(args: dict) -> str:
+    path = _resolve_path(args.get("path", ""))
+    if not os.path.exists(path):
+        return f"Error: File not found: {path}"
+    if not os.path.isfile(path):
+        return f"Error: Not a file: {path}"
+        
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+            
+        offset = args.get("offset")
+        limit = args.get("limit")
+        
+        start_idx = max(0, offset - 1) if offset else 0
+        end_idx = start_idx + limit if limit else len(lines)
+        
+        selected_lines = lines[start_idx:end_idx]
+        output = "".join(selected_lines)
+        return truncate_output(output)
+    except Exception as e:
+        return f"Error reading file: {str(e)}"
+
+async def handle_write(args: dict) -> str:
+    path = _resolve_path(args.get("path", ""))
+    content = args.get("content", "")
+    
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+        return f"Successfully wrote to {path}"
+    except Exception as e:
+        return f"Error writing file: {str(e)}"
+
+async def handle_edit(args: dict) -> str:
+    path = _resolve_path(args.get("path", ""))
+    target = args.get("targetContent", "")
+    replacement = args.get("replacementContent", "")
+    
+    if not os.path.exists(path):
+        return f"Error: File not found: {path}"
+        
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+            
+        if target not in content:
+            return "Error: targetContent not found in file. Ensure exact match including whitespace."
+            
+        if content.count(target) > 1:
+            return "Error: targetContent found multiple times in file. Please provide a larger unique context chunk."
+            
+        new_content = content.replace(target, replacement)
+        
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(new_content)
+            
+        return f"Successfully edited {path}"
+    except Exception as e:
+        return f"Error editing file: {str(e)}"
+
+async def handle_ls(args: dict) -> str:
+    path = _resolve_path(args.get("path", "."))
+    if not os.path.exists(path):
+        return f"Error: Directory not found: {path}"
+    if not os.path.isdir(path):
+        return f"Error: Not a directory: {path}"
+        
+    try:
+        entries = os.listdir(path)
+        output = []
+        for e in sorted(entries):
+            full_p = os.path.join(path, e)
+            if os.path.isdir(full_p):
+                output.append(f"{e}/")
+            else:
+                size = os.path.getsize(full_p)
+                output.append(f"{e} ({size} bytes)")
+        return truncate_output("\n".join(output))
+    except Exception as e:
+        return f"Error listing directory: {str(e)}"
+
+async def handle_find(args: dict) -> str:
+    path = _resolve_path(args.get("path", "."))
+    pattern = args.get("pattern", "")
+    
+    if not pattern:
+        return "Error: pattern is required"
+        
+    cmd = f"find {path} -name '{pattern}'"
+    return await execute_bash(cmd)
+
+async def handle_grep(args: dict) -> str:
+    path = _resolve_path(args.get("path", "."))
+    pattern = args.get("pattern", "")
+    include = args.get("include", "")
+    
+    if not pattern:
+        return "Error: pattern is required"
+        
+    cmd = f"grep -rnw '{path}' -e '{pattern}'"
+    if include:
+        cmd += f" --include='{include}'"
+        
+    return await execute_bash(cmd)
+
+async def execute_bash(command: str) -> str:
+    try:
+        process = await asyncio.create_subprocess_shell(
+            command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT
+        )
+        stdout, _ = await process.communicate()
+        return truncate_output(stdout.decode("utf-8", errors="replace"))
+    except Exception as e:
+        return f"Error executing bash: {str(e)}"
+
 async def execute_tool(name: str, arguments: str) -> str:
     try:
         args = json.loads(arguments)
     except json.JSONDecodeError:
         return "Error: Invalid JSON arguments provided."
 
-    if name == "bash_command":
+    if name == "read":
+        return await handle_read(args)
+    elif name == "write":
+        return await handle_write(args)
+    elif name == "edit":
+        return await handle_edit(args)
+    elif name == "ls":
+        return await handle_ls(args)
+    elif name == "find":
+        return await handle_find(args)
+    elif name == "grep":
+        return await handle_grep(args)
+    elif name == "bash" or name == "bash_command":
         command = args.get("command")
         if not command:
             return "Error: Missing command argument."
+        return await execute_bash(command)
         
-        # Execute asynchronously without blocking the main thread
-        process = await asyncio.create_subprocess_shell(
-            command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT
-        )
-        
-        stdout, _ = await process.communicate()
-        return stdout.decode("utf-8", errors="replace")
-    
     return f"Error: Unknown tool {name}"

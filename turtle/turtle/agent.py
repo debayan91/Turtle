@@ -146,7 +146,7 @@ async def run_agent():
 
     console.print("[bold green]Turtle Agent initialized (Fast CLI Mode)[/bold green]")
     if not state.messages:
-        sys_prompt = "You are Turtle, an ultra-fast local CLI coding agent. You can use bash_command to execute tools.\n"
+        sys_prompt = "You are Turtle, an ultra-fast local CLI coding agent. You can use the provided tools to interact with the file system and execute commands.\n"
         
         # Context Ingestion
         # Scan common context file locations
