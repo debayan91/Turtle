@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import uuid
 from prompt_toolkit import PromptSession
 from prompt_toolkit.patch_stdout import patch_stdout
 from rich.console import Console
@@ -109,7 +110,8 @@ def discover_skills() -> str:
 
 class AgentState:
     def __init__(self):
-        self.messages = []
+        self.nodes = {}
+        self.current_node_id = None
         self._load_state()
 
     def _load_state(self):
@@ -117,10 +119,45 @@ class AgentState:
             with open(STATE_FILE, "r") as f:
                 for line in f:
                     if line.strip():
-                        self.messages.append(json.loads(line))
+                        try:
+                            msg = json.loads(line)
+                            self.nodes[msg["id"]] = msg
+                            self.current_node_id = msg["id"]
+                        except Exception:
+                            pass
 
-    async def append_message(self, role: str, content: str | None = None, tool_calls: list = None, tool_call_id: str = None, name: str = None):
-        msg = {"role": role}
+    def get_messages(self, head_id=None) -> list:
+        current = head_id or self.current_node_id
+        messages = []
+        while current:
+            msg = self.nodes.get(current)
+            if not msg:
+                break
+            
+            # Filter out id and parent_id when passing to LLM
+            clean_msg = {k: v for k, v in msg.items() if k not in ("id", "parent_id")}
+            messages.append(clean_msg)
+            current = msg.get("parent_id")
+        return messages[::-1]
+
+    def get_lineage(self, head_id=None) -> list:
+        current = head_id or self.current_node_id
+        nodes = []
+        while current:
+            msg = self.nodes.get(current)
+            if not msg:
+                break
+            nodes.append(msg)
+            current = msg.get("parent_id")
+        return nodes[::-1]
+
+    async def append_message(self, role: str, content: str | None = None, tool_calls: list = None, tool_call_id: str = None, name: str = None) -> str:
+        msg_id = uuid.uuid4().hex[:8]
+        msg = {
+            "id": msg_id,
+            "parent_id": self.current_node_id,
+            "role": role
+        }
         if content is not None:
             msg["content"] = content
         if tool_calls is not None:
@@ -130,7 +167,8 @@ class AgentState:
         if name is not None:
             msg["name"] = name
 
-        self.messages.append(msg)
+        self.nodes[msg_id] = msg
+        self.current_node_id = msg_id
         
         # Append to file in a separate thread to avoid blocking the async event loop
         def _write():
@@ -138,6 +176,7 @@ class AgentState:
                 f.write(json.dumps(msg) + "\n")
         
         await asyncio.to_thread(_write)
+        return msg_id
 
 async def run_agent():
     state = AgentState()
@@ -145,11 +184,10 @@ async def run_agent():
     session = PromptSession()
 
     console.print("[bold green]Turtle Agent initialized (Fast CLI Mode)[/bold green]")
-    if not state.messages:
+    if not state.nodes:
         sys_prompt = "You are Turtle, an ultra-fast local CLI coding agent. You can use the provided tools to interact with the file system and execute commands.\n"
         
         # Context Ingestion
-        # Scan common context file locations
         context_paths = ["AGENTS.md", ".pi/prompts"]
         for c_path in context_paths:
             if os.path.exists(c_path):
@@ -197,7 +235,76 @@ async def run_agent():
             if user_input.startswith("/"):
                 cmd = user_input.strip().split()[0].lower()
                 if cmd == "/help":
-                    console.print("[bold cyan]Available Commands:[/bold cyan]\n/help - Show this help\n/model - Switch model (e.g. /model deepseek:deepseek-coder)\n/clear - Clear session history\n/compact - Summarize conversation to save context window\n/exit or /quit - Exit agent")
+                    console.print("[bold cyan]Available Commands:[/bold cyan]\n/help - Show this help\n/model - Switch model\n/tree - Show session tree\n/checkout <id> - Switch branch\n/undo - Go back one step\n/clear - Clear session history\n/compact - Summarize conversation to save context window\n/exit or /quit - Exit agent")
+                    continue
+                elif cmd == "/tree":
+                    # Build and print a simple tree representation
+                    children = {}
+                    roots = []
+                    for nid, n in state.nodes.items():
+                        pid = n.get("parent_id")
+                        if not pid:
+                            roots.append(nid)
+                        else:
+                            if pid not in children:
+                                children[pid] = []
+                            children[pid].append(nid)
+                            
+                    def print_tree(node_id, prefix=""):
+                        n = state.nodes[node_id]
+                        role = n.get("role", "")
+                        content = str(n.get("content", ""))[:30].replace("\n", " ") + "..." if n.get("content") else ""
+                        marker = "*" if node_id == state.current_node_id else " "
+                        console.print(f"{prefix}{marker} [{node_id}] {role}: {content}")
+                        
+                        for i, child_id in enumerate(children.get(node_id, [])):
+                            is_last = (i == len(children[node_id]) - 1)
+                            new_prefix = prefix + ("└── " if is_last else "├── ")
+                            next_prefix = prefix + ("    " if is_last else "│   ")
+                            # print the child prefix, then pass next_prefix for its children
+                            n_role = state.nodes[child_id].get("role", "")
+                            n_content = str(state.nodes[child_id].get("content", ""))[:30].replace("\n", " ") + "..." if state.nodes[child_id].get("content") else ""
+                            n_marker = "*" if child_id == state.current_node_id else " "
+                            console.print(f"{new_prefix}{n_marker} [{child_id}] {n_role}: {n_content}")
+                            for c in children.get(child_id, []):
+                                _print_tree_recursive(c, next_prefix)
+
+                    def _print_tree_recursive(node_id, prefix=""):
+                        for i, child_id in enumerate(children.get(node_id, [])):
+                            is_last = (i == len(children[node_id]) - 1)
+                            new_prefix = prefix + ("└── " if is_last else "├── ")
+                            next_prefix = prefix + ("    " if is_last else "│   ")
+                            n_role = state.nodes[child_id].get("role", "")
+                            n_content = str(state.nodes[child_id].get("content", ""))[:30].replace("\n", " ") + "..." if state.nodes[child_id].get("content") else ""
+                            n_marker = "*" if child_id == state.current_node_id else " "
+                            console.print(f"{new_prefix}{n_marker} [{child_id}] {n_role}: {n_content}")
+                            for c in children.get(child_id, []):
+                                _print_tree_recursive(c, next_prefix)
+
+                    if not roots:
+                        console.print("[yellow]Empty tree.[/yellow]")
+                    else:
+                        for root in roots:
+                            print_tree(root)
+                    continue
+                elif cmd == "/checkout" or cmd == "/fork":
+                    parts = user_input.strip().split()
+                    if len(parts) < 2:
+                        console.print("[bold red]Usage: /checkout <id>[/bold red]")
+                        continue
+                    target_id = parts[1]
+                    if target_id not in state.nodes:
+                        console.print(f"[bold red]Error: Node {target_id} not found.[/bold red]")
+                    else:
+                        state.current_node_id = target_id
+                        console.print(f"[bold green]Switched to node {target_id}[/bold green]")
+                    continue
+                elif cmd == "/undo":
+                    if state.current_node_id and state.nodes[state.current_node_id].get("parent_id"):
+                        state.current_node_id = state.nodes[state.current_node_id]["parent_id"]
+                        console.print(f"[bold green]Moved back to node {state.current_node_id}[/bold green]")
+                    else:
+                        console.print("[bold yellow]Already at root node.[/bold yellow]")
                     continue
                 elif cmd == "/model":
                     parts = user_input.strip().split()
@@ -221,19 +328,21 @@ async def run_agent():
                     
                     continue
                 elif cmd == "/clear":
-                    state.messages = []
+                    state.nodes = {}
+                    state.current_node_id = None
                     if os.path.exists(STATE_FILE):
                         os.remove(STATE_FILE)
                     console.print("[bold yellow]Session cleared. Restart agent to re-load context.[/bold yellow]")
                     continue
                 elif cmd == "/compact":
-                    if len(state.messages) <= 1:
+                    lineage = state.get_lineage()
+                    if len(lineage) <= 1:
                         console.print("[yellow]Not enough history to compact.[/yellow]")
                         continue
                     
                     console.print("[bold blue]Turtle is compacting history...[/bold blue]")
                     history_text = ""
-                    for msg in state.messages[1:]:
+                    for msg in lineage[1:]:
                         role = msg.get("role", "unknown")
                         content = msg.get("content", "")
                         if msg.get("tool_calls"):
@@ -256,18 +365,20 @@ async def run_agent():
                                 console.out(delta.content, end="")
                         console.out("\n")
                         
-                        system_msg = state.messages[0]
-                        state.messages = [system_msg, {"role": "assistant", "content": f"## Context Checkpoint\n\n{summary}"}]
+                        system_msg = lineage[0]
+                        # Create a new assistant node summarizing context, appended directly to the system root node
+                        # Temporarily change current_node_id to root to append summary branch
+                        old_head = state.current_node_id
+                        state.current_node_id = system_msg["id"]
                         
-                        if os.path.exists(STATE_FILE):
-                            os.remove(STATE_FILE)
-                        for m in state.messages:
-                            with open(STATE_FILE, "a") as f:
-                                f.write(json.dumps(m) + "\n")
-                                
-                        console.print("[bold green]History compacted successfully.[/bold green]")
+                        new_head = await state.append_message("assistant", content=f"## Context Checkpoint\n\n{summary}")
+                        # Keep current_node_id pointing to the new compaction branch
+                        state.current_node_id = new_head
+                        
+                        console.print("[bold green]History compacted successfully into new branch.[/bold green]")
                     except Exception as e:
                         console.print(f"[bold red]Compaction failed: {e}[/bold red]")
+                        state.current_node_id = old_head
                     continue
                 elif cmd in ("/exit", "/quit"):
                     os._exit(0)
@@ -284,7 +395,7 @@ async def run_agent():
                 
                 interrupted = False
                 try:
-                    async for chunk in client.stream_chat(state.messages, tools=TOOLS_SCHEMA):
+                    async for chunk in client.stream_chat(state.get_messages(), tools=TOOLS_SCHEMA):
                         if not input_queue.empty():
                             console.print("\n[bold yellow]Interrupting generation for steering message...[/bold yellow]")
                             interrupted = True
