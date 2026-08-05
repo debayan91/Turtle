@@ -175,164 +175,173 @@ async def run_agent():
         
         await state.append_message("system", sys_prompt)
 
-    while True:
-        try:
-            with patch_stdout():
-                user_input = await session.prompt_async("turtle> ")
-        except (EOFError, KeyboardInterrupt):
-            break
+    input_queue = asyncio.Queue()
 
-        if not user_input.strip():
-            continue
+    async def input_loop():
+        while True:
+            try:
+                with patch_stdout():
+                    user_input = await session.prompt_async("turtle> ")
+                if user_input.strip():
+                    await input_queue.put(user_input)
+            except (EOFError, KeyboardInterrupt):
+                await input_queue.put("/exit")
+                break
 
-        # Slash Commands
-        if user_input.startswith("/"):
-            cmd = user_input.strip().split()[0].lower()
-            if cmd == "/help":
-                console.print("[bold cyan]Available Commands:[/bold cyan]\n/help - Show this help\n/model - Switch model (e.g. /model deepseek:deepseek-coder)\n/clear - Clear session history\n/compact - Summarize conversation to save context window\n/exit or /quit - Exit agent")
-                continue
-            elif cmd == "/model":
-                parts = user_input.strip().split()
-                if len(parts) < 2:
-                    console.print(f"[bold cyan]Current model:[/bold cyan] {client.provider}:{client.model}")
+    async def process_loop():
+        nonlocal client
+        while True:
+            user_input = await input_queue.get()
+            
+            # Slash Commands
+            if user_input.startswith("/"):
+                cmd = user_input.strip().split()[0].lower()
+                if cmd == "/help":
+                    console.print("[bold cyan]Available Commands:[/bold cyan]\n/help - Show this help\n/model - Switch model (e.g. /model deepseek:deepseek-coder)\n/clear - Clear session history\n/compact - Summarize conversation to save context window\n/exit or /quit - Exit agent")
                     continue
-                
-                model_str = parts[1]
-                if ":" in model_str:
-                    provider, model = model_str.split(":", 1)
-                else:
-                    provider, model = "openai", model_str
-                
-                try:
-                    # Initialize new client before closing old one to catch Auth errors early
-                    new_client = LLMClient(provider=provider, model=model)
-                    await client.close()
-                    client = new_client
-                    console.print(f"[bold green]Switched model to {provider}:{model}[/bold green]")
-                except Exception as e:
-                    console.print(f"[bold red]Failed to switch model: {e}[/bold red]")
-                
-                continue
-            elif cmd == "/clear":
-                state.messages = []
-                if os.path.exists(STATE_FILE):
-                    os.remove(STATE_FILE)
-                # Re-initialize system prompt
-                console.print("[bold yellow]Session cleared. Restart agent to re-load context.[/bold yellow]")
-                continue
-            elif cmd == "/compact":
-                if len(state.messages) <= 1:
-                    console.print("[yellow]Not enough history to compact.[/yellow]")
+                elif cmd == "/model":
+                    parts = user_input.strip().split()
+                    if len(parts) < 2:
+                        console.print(f"[bold cyan]Current model:[/bold cyan] {client.provider}:{client.model}")
+                        continue
+                    
+                    model_str = parts[1]
+                    if ":" in model_str:
+                        provider, model = model_str.split(":", 1)
+                    else:
+                        provider, model = "openai", model_str
+                    
+                    try:
+                        new_client = LLMClient(provider=provider, model=model)
+                        await client.close()
+                        client = new_client
+                        console.print(f"[bold green]Switched model to {provider}:{model}[/bold green]")
+                    except Exception as e:
+                        console.print(f"[bold red]Failed to switch model: {e}[/bold red]")
+                    
                     continue
-                
-                console.print("[bold blue]Turtle is compacting history...[/bold blue]")
-                
-                # Serialize history to plain text for the LLM
-                history_text = ""
-                for msg in state.messages[1:]:
-                    role = msg.get("role", "unknown")
-                    content = msg.get("content", "")
-                    if msg.get("tool_calls"):
-                        content += f" [Tool Calls: {json.dumps(msg['tool_calls'])}]"
-                    history_text += f"<{role}>\n{content}\n</{role}>\n\n"
-                
-                prompt_text = f"<conversation>\n{history_text}</conversation>\n\n{SUMMARIZATION_PROMPT}"
-                
-                summarization_messages = [
-                    {"role": "system", "content": SUMMARIZATION_SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt_text}
-                ]
-                
-                summary = ""
-                try:
-                    async for chunk in client.stream_chat(summarization_messages):
-                        if not chunk.choices: continue
-                        delta = chunk.choices[0].delta
-                        if delta.content:
-                            summary += delta.content
-                            console.out(delta.content, end="")
-                    console.out("\n")
-                    
-                    # Retain the original system prompt, discard the rest, append the new context checkpoint summary
-                    system_msg = state.messages[0]
-                    state.messages = [system_msg, {"role": "assistant", "content": f"## Context Checkpoint\n\n{summary}"}]
-                    
-                    # Fully rewrite the state JSONL file
+                elif cmd == "/clear":
+                    state.messages = []
                     if os.path.exists(STATE_FILE):
                         os.remove(STATE_FILE)
-                    for m in state.messages:
-                        with open(STATE_FILE, "a") as f:
-                            f.write(json.dumps(m) + "\n")
-                            
-                    console.print("[bold green]History compacted successfully.[/bold green]")
-                except Exception as e:
-                    console.print(f"[bold red]Compaction failed: {e}[/bold red]")
-                
-                continue
-            elif cmd in ("/exit", "/quit"):
-                break
-            else:
-                console.print(f"[bold red]Unknown command: {cmd}[/bold red]")
-                continue
-
-        await state.append_message("user", user_input)
-        
-        while True:
-            # Accumulate the assistant message
-            assistant_content = ""
-            current_tool_calls = {} # map index to tool call dict
-            
-            console.print("[bold blue]Turtle:[/bold blue] ", end="")
-            
-            # Use raw printing for instant feedback without rich overhead until block ends
-            try:
-                async for chunk in client.stream_chat(state.messages, tools=TOOLS_SCHEMA):
-                    if not chunk.choices:
+                    console.print("[bold yellow]Session cleared. Restart agent to re-load context.[/bold yellow]")
+                    continue
+                elif cmd == "/compact":
+                    if len(state.messages) <= 1:
+                        console.print("[yellow]Not enough history to compact.[/yellow]")
                         continue
-                    delta = chunk.choices[0].delta
                     
-                    if delta.content:
-                        assistant_content += delta.content
-                        # Instant terminal write
-                        console.out(delta.content, end="")
+                    console.print("[bold blue]Turtle is compacting history...[/bold blue]")
+                    history_text = ""
+                    for msg in state.messages[1:]:
+                        role = msg.get("role", "unknown")
+                        content = msg.get("content", "")
+                        if msg.get("tool_calls"):
+                            content += f" [Tool Calls: {json.dumps(msg['tool_calls'])}]"
+                        history_text += f"<{role}>\n{content}\n</{role}>\n\n"
                     
-                    if delta.tool_calls:
-                        for tc in delta.tool_calls:
-                            if tc.index not in current_tool_calls:
-                                current_tool_calls[tc.index] = {
-                                    "id": tc.id,
-                                    "type": "function",
-                                    "function": {"name": tc.function.name, "arguments": ""}
-                                }
-                            if tc.function and tc.function.arguments:
-                                current_tool_calls[tc.index]["function"]["arguments"] += tc.function.arguments
-            except Exception as e:
-                console.print(f"\n[red]Error during generation: {e}[/red]")
-                break
+                    prompt_text = f"<conversation>\n{history_text}</conversation>\n\n{SUMMARIZATION_PROMPT}"
+                    summarization_messages = [
+                        {"role": "system", "content": SUMMARIZATION_SYSTEM_PROMPT},
+                        {"role": "user", "content": prompt_text}
+                    ]
+                    
+                    summary = ""
+                    try:
+                        async for chunk in client.stream_chat(summarization_messages):
+                            if not chunk.choices: continue
+                            delta = chunk.choices[0].delta
+                            if delta.content:
+                                summary += delta.content
+                                console.out(delta.content, end="")
+                        console.out("\n")
+                        
+                        system_msg = state.messages[0]
+                        state.messages = [system_msg, {"role": "assistant", "content": f"## Context Checkpoint\n\n{summary}"}]
+                        
+                        if os.path.exists(STATE_FILE):
+                            os.remove(STATE_FILE)
+                        for m in state.messages:
+                            with open(STATE_FILE, "a") as f:
+                                f.write(json.dumps(m) + "\n")
+                                
+                        console.print("[bold green]History compacted successfully.[/bold green]")
+                    except Exception as e:
+                        console.print(f"[bold red]Compaction failed: {e}[/bold red]")
+                    continue
+                elif cmd in ("/exit", "/quit"):
+                    os._exit(0)
+                else:
+                    console.print(f"[bold red]Unknown command: {cmd}[/bold red]")
+                    continue
 
-            console.out("") # Newline after streaming
+            await state.append_message("user", user_input)
             
-            # Append assistant message
-            tool_calls_list = list(current_tool_calls.values()) if current_tool_calls else None
-            await state.append_message("assistant", content=assistant_content or None, tool_calls=tool_calls_list)
-            
-            if tool_calls_list:
-                # Execute tools
-                for tc in tool_calls_list:
-                    name = tc["function"]["name"]
-                    arguments = tc["function"]["arguments"]
-                    console.print(f"[dim]Executing tool: {name}({arguments})[/dim]")
-                    
-                    result = await execute_tool(name, arguments)
-                    
-                    result_str = str(result)
-                    display_result = result_str[:200] + "..." if len(result_str) > 200 else result_str
-                    console.print(f"[dim]Tool result: {display_result.strip()}[/dim]")
-                    await state.append_message("tool", content=result_str, tool_call_id=tc["id"], name=name)
+            while True:
+                assistant_content = ""
+                current_tool_calls = {}
+                console.print("[bold blue]Turtle:[/bold blue] ", end="")
                 
-                # Loop back to let the LLM process the tool results
-                continue
-            else:
-                break
+                interrupted = False
+                try:
+                    async for chunk in client.stream_chat(state.messages, tools=TOOLS_SCHEMA):
+                        if not input_queue.empty():
+                            console.print("\n[bold yellow]Interrupting generation for steering message...[/bold yellow]")
+                            interrupted = True
+                            break
+                            
+                        if not chunk.choices:
+                            continue
+                        delta = chunk.choices[0].delta
+                        
+                        if delta.content:
+                            assistant_content += delta.content
+                            console.out(delta.content, end="")
+                        
+                        if delta.tool_calls:
+                            for tc in delta.tool_calls:
+                                if tc.index not in current_tool_calls:
+                                    current_tool_calls[tc.index] = {
+                                        "id": tc.id,
+                                        "type": "function",
+                                        "function": {"name": tc.function.name, "arguments": ""}
+                                    }
+                                if tc.function and tc.function.arguments:
+                                    current_tool_calls[tc.index]["function"]["arguments"] += tc.function.arguments
+                except Exception as e:
+                    console.print(f"\n[red]Error during generation: {e}[/red]")
+                    break
+
+                console.out("") # Newline
                 
+                tool_calls_list = list(current_tool_calls.values()) if current_tool_calls else None
+                await state.append_message("assistant", content=assistant_content or None, tool_calls=tool_calls_list)
+                
+                if interrupted:
+                    break
+                
+                if tool_calls_list:
+                    for tc in tool_calls_list:
+                        if not input_queue.empty():
+                            console.print("\n[bold yellow]Interrupting tools for steering message...[/bold yellow]")
+                            interrupted = True
+                            break
+                            
+                        name = tc["function"]["name"]
+                        arguments = tc["function"]["arguments"]
+                        console.print(f"[dim]Executing tool: {name}({arguments})[/dim]")
+                        
+                        result = await execute_tool(name, arguments)
+                        result_str = str(result)
+                        display_result = result_str[:200] + "..." if len(result_str) > 200 else result_str
+                        console.print(f"[dim]Tool result: {display_result.strip()}[/dim]")
+                        await state.append_message("tool", content=result_str, tool_call_id=tc["id"], name=name)
+                    
+                    if interrupted:
+                        break
+                    continue
+                else:
+                    break
+
+    await asyncio.gather(input_loop(), process_loop())
     await client.close()
