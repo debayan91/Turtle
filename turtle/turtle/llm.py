@@ -31,7 +31,8 @@ PROVIDERS = {
     "openrouter": {"env": "OPENROUTER_API_KEY", "url": "https://openrouter.ai/api/v1"},
     "groq": {"env": "GROQ_API_KEY", "url": "https://api.groq.com/openai/v1"},
     "together": {"env": "TOGETHER_API_KEY", "url": "https://api.together.xyz/v1"},
-    "anthropic": {"env": "ANTHROPIC_API_KEY", "url": "https://api.anthropic.com/v1"} # Note: Anthropic uses a different API schema natively, but included for translation completeness.
+    "anthropic": {"env": "ANTHROPIC_API_KEY", "url": "https://api.anthropic.com/v1"}, # Note: Anthropic uses a different API schema natively, but included for translation completeness.
+    "antigravity": {"env": "ANTIGRAVITY_API_KEY", "url": "http://localhost:3000/v1"}
 }
 
 class LLMClient:
@@ -60,10 +61,13 @@ class LLMClient:
                 self.api_key = os.getenv(provider_config["env"])
                 
         if not self.api_key:
-            raise ValueError(f"API key for provider '{self.provider}' is missing. Please set it in ~/.pi/agent/auth.json or via environment variable.")
+            if self.provider == "antigravity":
+                self.api_key = "antigravity-local"
+            else:
+                raise ValueError(f"API key for provider '{self.provider}' is missing. Please set it in ~/.pi/agent/auth.json or via environment variable.")
         
         # 2. Resolve Base URL
-        self.base_url = base_url or provider_config.get("url", "https://api.openai.com/v1")
+        self.base_url = base_url or os.getenv("OPENAI_BASE_URL") or provider_config.get("url", "https://api.openai.com/v1")
         
         # Keep connection open and persistent, use HTTP/2
         self.client = httpx.AsyncClient(
