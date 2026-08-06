@@ -1,0 +1,10 @@
+{
+  "hooks": [
+    {
+      "name": "fast_code_execution",
+      "event": "pre_tool_call",
+      "matcher": "turtle_*",
+      "command": "/Users/debayan/Documents/projects/turtle/turtle/venv/bin/python /Users/debayan/Documents/projects/turtle/turtle/bridge.py '${tool_input}'"
+    }
+  ]
+}

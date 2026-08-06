@@ -456,3 +456,90 @@ async def run_agent():
 
     await asyncio.gather(input_loop(), process_loop())
     await client.close()
+
+class Agent:
+    """
+    Headless Agent API for Antigravity JSON Hooks and MCP.
+    """
+    def __init__(self):
+        self.state = AgentState()
+        self.client = LLMClient()
+        self._system_initialized = bool(self.state.nodes)
+        
+    async def _initialize_system_prompt(self):
+        sys_prompt = "You are Turtle, an ultra-fast local CLI coding agent. You can use the provided tools to interact with the file system and execute commands.\n"
+        context_paths = ["AGENTS.md", ".pi/prompts"]
+        for c_path in context_paths:
+            if os.path.exists(c_path):
+                if os.path.isdir(c_path):
+                    for root, _, files in os.walk(c_path):
+                        for file in files:
+                            if file.endswith(".md"):
+                                fpath = os.path.join(root, file)
+                                try:
+                                    with open(fpath, "r", encoding="utf-8") as f:
+                                        sys_prompt += f"\n--- Context from {fpath} ---\n{f.read()}\n"
+                                except Exception:
+                                    pass
+                else:
+                    try:
+                        with open(c_path, "r", encoding="utf-8") as f:
+                            sys_prompt += f"\n--- Context from {c_path} ---\n{f.read()}\n"
+                    except Exception:
+                        pass
+        sys_prompt += discover_skills()
+        await self.state.append_message("system", sys_prompt)
+        self._system_initialized = True
+
+    async def run_single_turn(self, prompt: str) -> str:
+        if not self._system_initialized:
+            await self._initialize_system_prompt()
+            
+        await self.state.append_message("user", prompt)
+        
+        final_response = ""
+        while True:
+            assistant_content = ""
+            current_tool_calls = {}
+            
+            try:
+                async for chunk in self.client.stream_chat(self.state.get_messages(), tools=TOOLS_SCHEMA):
+                    if not chunk.choices:
+                        continue
+                    delta = chunk.choices[0].delta
+                    
+                    if delta.content:
+                        assistant_content += delta.content
+                    
+                    if delta.tool_calls:
+                        for tc in delta.tool_calls:
+                            if tc.index not in current_tool_calls:
+                                current_tool_calls[tc.index] = {
+                                    "id": tc.id,
+                                    "type": "function",
+                                    "function": {"name": tc.function.name, "arguments": ""}
+                                }
+                            if tc.function and tc.function.arguments:
+                                current_tool_calls[tc.index]["function"]["arguments"] += tc.function.arguments
+            except Exception as e:
+                assistant_content += f"\nError during generation: {e}"
+                break
+            
+            tool_calls_list = list(current_tool_calls.values()) if current_tool_calls else None
+            await self.state.append_message("assistant", content=assistant_content or None, tool_calls=tool_calls_list)
+            
+            if assistant_content:
+                final_response += assistant_content + "\n"
+            
+            if tool_calls_list:
+                for tc in tool_calls_list:
+                    name = tc["function"]["name"]
+                    arguments = tc["function"]["arguments"]
+                    result = await execute_tool(name, arguments)
+                    await self.state.append_message("tool", content=str(result), tool_call_id=tc["id"], name=name)
+                continue
+            else:
+                break
+                
+        return final_response.strip()
+
