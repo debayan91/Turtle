@@ -133,24 +133,32 @@ def _resolve_path(path_str: str) -> str:
 
 async def handle_read(args: dict) -> str:
     path = _resolve_path(args.get("path", ""))
-    if not os.path.exists(path):
-        return f"Error: File not found: {path}"
-    if not os.path.isfile(path):
-        return f"Error: Not a file: {path}"
-        
+    
     try:
         with open(path, "r", encoding="utf-8") as f:
             lines = f.readlines()
             
-        offset = args.get("offset")
-        limit = args.get("limit")
+        offset_val = args.get("offset")
+        limit_val = args.get("limit")
         
+        try:
+            offset = int(offset_val) if offset_val is not None else None
+            limit = int(limit_val) if limit_val is not None else None
+        except (ValueError, TypeError):
+            return "Error: 'offset' and 'limit' must be valid integers."
+            
         start_idx = max(0, offset - 1) if offset else 0
         end_idx = start_idx + limit if limit else len(lines)
         
         selected_lines = lines[start_idx:end_idx]
         output = "".join(selected_lines)
         return truncate_output(output)
+    except FileNotFoundError:
+        return f"Error: File not found at path '{path}'"
+    except PermissionError:
+        return f"Error: Permission denied reading '{path}'"
+    except UnicodeDecodeError:
+        return f"Error: File at '{path}' is not valid UTF-8 text"
     except Exception as e:
         return f"Error reading file: {str(e)}"
 
@@ -158,11 +166,13 @@ async def handle_write(args: dict) -> str:
     path = _resolve_path(args.get("path", ""))
     content = args.get("content", "")
     
-    os.makedirs(os.path.dirname(path), exist_ok=True)
     try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             f.write(content)
         return f"Successfully wrote to {path}"
+    except PermissionError:
+        return f"Error: Permission denied writing to '{path}'. Check directory permissions."
     except Exception as e:
         return f"Error writing file: {str(e)}"
 
@@ -171,9 +181,6 @@ async def handle_edit(args: dict) -> str:
     target = args.get("targetContent", "")
     replacement = args.get("replacementContent", "")
     
-    if not os.path.exists(path):
-        return f"Error: File not found: {path}"
-        
     try:
         with open(path, "r", encoding="utf-8") as f:
             content = f.read()
@@ -190,16 +197,16 @@ async def handle_edit(args: dict) -> str:
             f.write(new_content)
             
         return f"Successfully edited {path}"
+    except FileNotFoundError:
+        return f"Error: File not found at path '{path}'"
+    except PermissionError:
+        return f"Error: Permission denied editing '{path}'"
     except Exception as e:
         return f"Error editing file: {str(e)}"
 
 async def handle_ls(args: dict) -> str:
     path = _resolve_path(args.get("path", "."))
-    if not os.path.exists(path):
-        return f"Error: Directory not found: {path}"
-    if not os.path.isdir(path):
-        return f"Error: Not a directory: {path}"
-        
+    
     try:
         entries = os.listdir(path)
         output = []
@@ -211,6 +218,12 @@ async def handle_ls(args: dict) -> str:
                 size = os.path.getsize(full_p)
                 output.append(f"{e} ({size} bytes)")
         return truncate_output("\n".join(output))
+    except FileNotFoundError:
+        return f"Error: Directory not found: '{path}'"
+    except NotADirectoryError:
+        return f"Error: Path is not a directory: '{path}'"
+    except PermissionError:
+        return f"Error: Permission denied listing directory '{path}'"
     except Exception as e:
         return f"Error listing directory: {str(e)}"
 
@@ -245,8 +258,15 @@ async def execute_bash(command: str) -> str:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT
         )
-        stdout, _ = await process.communicate()
+        # Timeout to prevent hanging tasks forever
+        stdout, _ = await asyncio.wait_for(process.communicate(), timeout=120.0)
         return truncate_output(stdout.decode("utf-8", errors="replace"))
+    except asyncio.TimeoutError:
+        try:
+            process.kill()
+        except OSError:
+            pass
+        return f"Error: Command timed out after 120 seconds."
     except Exception as e:
         return f"Error executing bash: {str(e)}"
 

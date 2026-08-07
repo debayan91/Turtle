@@ -117,15 +117,21 @@ class AgentState:
 
     def _load_state(self):
         if os.path.exists(STATE_FILE):
+            corrupt = False
             with open(STATE_FILE, "r") as f:
-                for line in f:
+                for line_idx, line in enumerate(f):
                     if line.strip():
                         try:
                             msg = json.loads(line)
                             self.nodes[msg["id"]] = msg
                             self.current_node_id = msg["id"]
-                        except Exception:
-                            pass
+                        except json.JSONDecodeError:
+                            print(f"Warning: Corrupt line {line_idx+1} in {STATE_FILE}.")
+                            corrupt = True
+                        except Exception as e:
+                            print(f"Error loading state: {e}")
+            if corrupt:
+                print(f"Warning: {STATE_FILE} contains corrupted lines. The agent will ignore them but continue.")
 
     def get_messages(self, head_id=None) -> list:
         current = head_id or self.current_node_id
@@ -173,8 +179,14 @@ class AgentState:
         
         # Append to file in a separate thread to avoid blocking the async event loop
         def _write():
-            with open(STATE_FILE, "a") as f:
-                f.write(json.dumps(msg) + "\n")
+            try:
+                with open(STATE_FILE, "a") as f:
+                    f.write(json.dumps(msg) + "\n")
+            except OSError as e:
+                # If we fail to write state, we log to stdout. 
+                # This ensures the process loop doesn't crash entirely on a disk-full error, 
+                # though it means state won't persist.
+                print(f"\n[!] WARNING: Failed to write to {STATE_FILE}: {e}")
         
         await asyncio.to_thread(_write)
         return msg_id
@@ -188,7 +200,7 @@ async def run_agent():
     input_queue = asyncio.Queue()
 
     def _exit_cb():
-        os._exit(0)
+        pass  # Rely on app.exit() to stop the TUI cleanly
 
     tui = TurtleTUI(input_queue=input_queue, exit_callback=_exit_cb)
 
@@ -379,7 +391,8 @@ async def run_agent():
                             state.current_node_id = old_head
                         continue
                     elif cmd in ("/exit", "/quit"):
-                        os._exit(0)
+                        tui.app.exit()
+                        break
                     else:
                         tui.append_transcript(f"[bold red]Unknown command: {cmd}[/bold red]")
                         continue
@@ -464,8 +477,19 @@ async def run_agent():
                 tui.display_error(f"Fatal error in process loop: {e}")
                 # We do not break, allowing the UI to remain alive
 
-    await asyncio.gather(tui.run_async(), process_loop())
-    await client.close()
+    try:
+        tui_task = asyncio.create_task(tui.run_async())
+        process_task = asyncio.create_task(process_loop())
+        
+        done, pending = await asyncio.wait(
+            [tui_task, process_task],
+            return_when=asyncio.FIRST_COMPLETED
+        )
+        
+        for task in pending:
+            task.cancel()
+    finally:
+        await client.close()
 
 class Agent:
     """

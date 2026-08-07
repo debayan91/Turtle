@@ -53,8 +53,10 @@ class LLMClient:
                         auth_data = json.load(f)
                         if self.provider in auth_data:
                             self.api_key = auth_data[self.provider].get("key")
-                except Exception:
-                    pass
+                except json.JSONDecodeError:
+                    print(f"Warning: Failed to parse {auth_file}. The file might be corrupted.")
+                except OSError as e:
+                    print(f"Warning: Could not read {auth_file}: {e}")
             
             # Try Environment Variable
             if not self.api_key and "env" in provider_config:
@@ -91,18 +93,26 @@ class LLMClient:
             payload["tools"] = tools
 
         # Stream the SSE response
-        async with self.client.stream("POST", "/chat/completions", content=msgspec.json.encode(payload)) as response:
-            response.raise_for_status()
-            async for line in response.aiter_lines():
-                if line.startswith("data: "):
-                    data_str = line[6:]
-                    if data_str == "[DONE]":
-                        break
-                    try:
-                        chunk = self.decoder.decode(data_str.encode("utf-8"))
-                        yield chunk
-                    except msgspec.DecodeError:
-                        pass # Ignore malformed chunks
+        try:
+            async with self.client.stream("POST", "/chat/completions", content=msgspec.json.encode(payload)) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if line.startswith("data: "):
+                        data_str = line[6:]
+                        if data_str == "[DONE]":
+                            break
+                        try:
+                            chunk = self.decoder.decode(data_str.encode("utf-8"))
+                            yield chunk
+                        except msgspec.DecodeError:
+                            pass # Ignore malformed chunks
+        except httpx.TimeoutException as e:
+            raise RuntimeError(f"LLM API request timed out: {e}")
+        except httpx.HTTPStatusError as e:
+            error_body = await e.response.aread() if not e.response.is_stream_consumed else b"<stream consumed>"
+            raise RuntimeError(f"LLM API returned HTTP {e.response.status_code}: {error_body.decode(errors='replace')}")
+        except httpx.RequestError as e:
+            raise RuntimeError(f"Network error while connecting to LLM API: {e}")
 
     async def close(self):
         await self.client.aclose()
