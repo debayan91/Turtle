@@ -113,7 +113,13 @@ class AgentState:
     def __init__(self):
         self.nodes = {}
         self.current_node_id = None
+        self.load_warnings = []
         self._load_state()
+
+    def get_lock(self):
+        if not hasattr(self, '_lock'):
+            self._lock = asyncio.Lock()
+        return self._lock
 
     def _load_state(self):
         if os.path.exists(STATE_FILE):
@@ -126,12 +132,12 @@ class AgentState:
                             self.nodes[msg["id"]] = msg
                             self.current_node_id = msg["id"]
                         except json.JSONDecodeError:
-                            print(f"Warning: Corrupt line {line_idx+1} in {STATE_FILE}.")
+                            self.load_warnings.append(f"Warning: Corrupt line {line_idx+1} in {STATE_FILE}.")
                             corrupt = True
                         except Exception as e:
-                            print(f"Error loading state: {e}")
+                            self.load_warnings.append(f"Error loading state: {e}")
             if corrupt:
-                print(f"Warning: {STATE_FILE} contains corrupted lines. The agent will ignore them but continue.")
+                self.load_warnings.append(f"Warning: {STATE_FILE} contains corrupted lines. The agent will ignore them but continue.")
 
     def get_messages(self, head_id=None) -> list:
         current = head_id or self.current_node_id
@@ -188,7 +194,8 @@ class AgentState:
                 # though it means state won't persist.
                 print(f"\n[!] WARNING: Failed to write to {STATE_FILE}: {e}")
         
-        await asyncio.to_thread(_write)
+        async with self.get_lock():
+            await asyncio.to_thread(_write)
         return msg_id
 
 async def run_agent():
@@ -231,6 +238,9 @@ async def run_agent():
         
         # Skills Discovery & Injection
         sys_prompt += discover_skills()
+        
+        if state.load_warnings:
+            sys_prompt += "\n\n--- System Warnings ---\n" + "\n".join(state.load_warnings)
         
         await state.append_message("system", sys_prompt)
 
@@ -345,8 +355,9 @@ async def run_agent():
                     elif cmd == "/clear":
                         state.nodes = {}
                         state.current_node_id = None
-                        if os.path.exists(STATE_FILE):
-                            os.remove(STATE_FILE)
+                        async with state.get_lock():
+                            if os.path.exists(STATE_FILE):
+                                os.remove(STATE_FILE)
                         tui.append_transcript("[bold yellow]Session cleared. Restart agent to re-load context.[/bold yellow]")
                         continue
                     elif cmd == "/compact":
@@ -434,6 +445,7 @@ async def run_agent():
                                         current_tool_calls[tc.index]["function"]["arguments"] += tc.function.arguments
                     except Exception as e:
                         tui.display_error(f"Error during generation: {e}")
+                        current_tool_calls = {}  # Discard incomplete tool calls
                         break
 
                     if assistant_content:
@@ -525,8 +537,16 @@ class Agent:
                     except Exception:
                         pass
         sys_prompt += discover_skills()
+        
+        if self.state.load_warnings:
+            sys_prompt += "\n\n--- System Warnings ---\n" + "\n".join(self.state.load_warnings)
+            
         await self.state.append_message("system", sys_prompt)
         self._system_initialized = True
+        
+    async def close(self):
+        if self.client:
+            await self.client.close()
 
     async def run_single_turn(self, prompt: str) -> str:
         if not self._system_initialized:
@@ -560,6 +580,7 @@ class Agent:
                                 current_tool_calls[tc.index]["function"]["arguments"] += tc.function.arguments
             except Exception as e:
                 assistant_content += f"\nError during generation: {e}"
+                current_tool_calls = {}  # Discard incomplete tool calls
                 break
             
             tool_calls_list = list(current_tool_calls.values()) if current_tool_calls else None

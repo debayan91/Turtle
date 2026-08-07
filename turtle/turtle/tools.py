@@ -2,6 +2,8 @@ import asyncio
 import json
 import os
 import re
+import shlex
+import itertools
 from typing import Dict, Any, List
 
 TOOLS_SCHEMA = [
@@ -135,9 +137,6 @@ async def handle_read(args: dict) -> str:
     path = _resolve_path(args.get("path", ""))
     
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-            
         offset_val = args.get("offset")
         limit_val = args.get("limit")
         
@@ -148,9 +147,13 @@ async def handle_read(args: dict) -> str:
             return "Error: 'offset' and 'limit' must be valid integers."
             
         start_idx = max(0, offset - 1) if offset else 0
-        end_idx = start_idx + limit if limit else len(lines)
         
-        selected_lines = lines[start_idx:end_idx]
+        with open(path, "r", encoding="utf-8") as f:
+            if limit:
+                selected_lines = list(itertools.islice(f, start_idx, start_idx + limit))
+            else:
+                selected_lines = list(itertools.islice(f, start_idx, None))
+                
         output = "".join(selected_lines)
         return truncate_output(output)
     except FileNotFoundError:
@@ -182,6 +185,11 @@ async def handle_edit(args: dict) -> str:
     replacement = args.get("replacementContent", "")
     
     try:
+        # Check size to prevent OOM
+        file_size = os.path.getsize(path)
+        if file_size > MAX_OUTPUT_CHARS * 10:  # e.g., 1MB limit for edits
+            return f"Error: File at '{path}' is too large to edit directly ({file_size} bytes). Use sed or awk via bash."
+            
         with open(path, "r", encoding="utf-8") as f:
             content = f.read()
             
@@ -234,7 +242,7 @@ async def handle_find(args: dict) -> str:
     if not pattern:
         return "Error: pattern is required"
         
-    cmd = f"find {path} -name '{pattern}'"
+    cmd = f"find {shlex.quote(path)} -name {shlex.quote(pattern)}"
     return await execute_bash(cmd)
 
 async def handle_grep(args: dict) -> str:
@@ -245,9 +253,9 @@ async def handle_grep(args: dict) -> str:
     if not pattern:
         return "Error: pattern is required"
         
-    cmd = f"grep -rnw '{path}' -e '{pattern}'"
+    cmd = f"grep -rnw {shlex.quote(path)} -e {shlex.quote(pattern)}"
     if include:
-        cmd += f" --include='{include}'"
+        cmd += f" --include={shlex.quote(include)}"
         
     return await execute_bash(cmd)
 
@@ -256,14 +264,15 @@ async def execute_bash(command: str) -> str:
         process = await asyncio.create_subprocess_shell(
             command,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT
+            stderr=asyncio.subprocess.STDOUT,
+            preexec_fn=os.setsid
         )
         # Timeout to prevent hanging tasks forever
         stdout, _ = await asyncio.wait_for(process.communicate(), timeout=120.0)
         return truncate_output(stdout.decode("utf-8", errors="replace"))
     except asyncio.TimeoutError:
         try:
-            process.kill()
+            os.killpg(os.getpgid(process.pid), 9)
         except OSError:
             pass
         return f"Error: Command timed out after 120 seconds."
@@ -275,6 +284,9 @@ async def execute_tool(name: str, arguments: str) -> str:
         args = json.loads(arguments)
     except json.JSONDecodeError:
         return "Error: Invalid JSON arguments provided."
+        
+    if not isinstance(args, dict):
+        return "Error: JSON arguments must be a dictionary/object."
 
     if name == "read":
         return await handle_read(args)

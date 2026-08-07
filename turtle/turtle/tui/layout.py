@@ -7,9 +7,11 @@ import re
 
 class TurtleLayout:
     def __init__(self):
+        self._transcript_chunks = ["Welcome to Turtle TUI!\n"]
+        
         # 1. Transcript Area (Read-only history)
         self.transcript_area = TextArea(
-            text="Welcome to Turtle TUI!\n",
+            text=self._transcript_chunks[0],
             read_only=True,
             scrollbar=True,
             line_numbers=False,
@@ -44,7 +46,14 @@ class TurtleLayout:
     def append_transcript(self, text: str):
         # Strip rich markup tags like [bold green] or [/bold]
         clean_text = re.sub(r'\[/?(?:bold|dim|cyan|yellow|red|green|blue|white)(?:\s+[^\]]+)?\]', '', text)
-        self.transcript_area.text += clean_text + "\n"
+        
+        self._transcript_chunks.append(clean_text + "\n")
+        
+        # Prevent unbounded memory growth and O(N^2) UI lag by limiting history to 2000 chunks
+        if len(self._transcript_chunks) > 2000:
+            self._transcript_chunks = self._transcript_chunks[-2000:]
+            
+        self.transcript_area.text = "".join(self._transcript_chunks)
         
     def update_footer(self, text: str):
         self.footer_text.text = HTML(text)
