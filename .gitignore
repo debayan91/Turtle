@@ -1,0 +1,22 @@
+# Environment files
+.env
+.env.*
+*.env
+
+# Embedded repository / directory
+pi/
+pi
+
+# Python cache & environment
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv/
+
+# macOS system files
+.DS_Store
