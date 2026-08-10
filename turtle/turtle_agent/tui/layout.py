@@ -2,26 +2,39 @@ from prompt_toolkit.layout.containers import HSplit, VSplit, Window
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.widgets import TextArea, Frame
 from prompt_toolkit.layout.dimension import Dimension
-from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.formatted_text import HTML, ANSI
 from prompt_toolkit.completion import WordCompleter
+from prompt_toolkit.data_structures import Point
+from rich.console import Console
+from rich.markdown import Markdown
+from rich.text import Text
+import io
 import re
 
 class TurtleLayout:
     def __init__(self):
-        self._transcript_chunks = ["Welcome to Turtle TUI!\n"]
+        self._transcript_chunks = [(False, "[bold green]Welcome to Turtle TUI![/bold green]")]
         
         self.completer = WordCompleter([
             '/help', '/tree', '/checkout', '/undo', '/models', 
             '/model', '/clear', '/compact', '/exit', '/quit'
         ], ignore_case=True)
         
+        self.console = Console(file=io.StringIO(), force_terminal=True, color_system="truecolor", width=120)
+        self._rendered_lines = 1
+        
         # 1. Transcript Area (Read-only history)
-        self.transcript_area = TextArea(
-            text=self._transcript_chunks[0],
-            read_only=True,
-            scrollbar=True,
-            line_numbers=False,
+        self.transcript_control = FormattedTextControl(
+            text=ANSI(self._get_rendered_ansi()),
+            focusable=True
+        )
+        self.transcript_control.get_cursor_position = self._get_cursor_position
+        
+        self.transcript_area = Window(
+            content=self.transcript_control,
             wrap_lines=True,
+            always_hide_cursor=True,
+            scroll_offsets=None
         )
         
         # 2. Input Area
@@ -51,18 +64,31 @@ class TurtleLayout:
             self.footer_window
         ])
 
-    def append_transcript(self, text: str):
-        # Strip rich markup tags like [bold green] or [/bold]
-        clean_text = re.sub(r'\[/?(?:bold|dim|cyan|yellow|red|green|blue|white)(?:\s+[^\]]+)?\]', '', text)
+    def _get_rendered_ansi(self):
+        self.console.file.truncate(0)
+        self.console.file.seek(0)
         
-        self._transcript_chunks.append(clean_text + "\n")
+        for is_md, chunk in self._transcript_chunks:
+            if is_md:
+                self.console.print(Markdown(chunk))
+            else:
+                self.console.print(chunk)
+                
+        return self.console.file.getvalue()
+
+    def _get_cursor_position(self):
+        return Point(0, self._rendered_lines)
+
+    def append_transcript(self, text: str, is_markdown: bool = False):
+        self._transcript_chunks.append((is_markdown, text))
         
-        # Prevent unbounded memory growth and O(N^2) UI lag by limiting history to 2000 chunks
+        # Prevent unbounded memory growth
         if len(self._transcript_chunks) > 2000:
             self._transcript_chunks = self._transcript_chunks[-2000:]
             
-        self.transcript_area.text = "".join(self._transcript_chunks)
-        self.transcript_area.buffer.cursor_position = len(self.transcript_area.text)
+        ansi_str = self._get_rendered_ansi()
+        self._rendered_lines = ansi_str.count('\n')
+        self.transcript_control.text = ANSI(ansi_str)
         
     def update_footer(self, text: str):
         self.footer_text.text = HTML(text)

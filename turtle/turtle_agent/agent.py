@@ -482,7 +482,9 @@ async def run_agent():
                         break
 
                     if assistant_content:
-                        tui.append_transcript(f"[bold blue]Turtle:[/bold blue]\n{assistant_content}")
+                        tui.append_transcript("[bold blue]Turtle:[/bold blue]")
+                        tui.append_transcript(assistant_content, is_markdown=True)
+                        tui.append_transcript("")
                     
                     tool_calls_list = list(current_tool_calls.values()) if current_tool_calls else None
                     await state.append_message("assistant", content=assistant_content or None, tool_calls=tool_calls_list)

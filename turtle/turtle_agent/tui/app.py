@@ -60,11 +60,11 @@ class TurtleTUI:
             print(f"Fatal TUI Error: {e}")
             traceback.print_exc()
 
-    def append_transcript(self, text: str):
+    def append_transcript(self, text: str, is_markdown: bool = False):
         """Thread-safe and async-safe way to append text to the transcript."""
         # Using call_from_executor or directly since prompt_toolkit 3.0 handles updates during run_async.
         try:
-            self.layout_engine.append_transcript(text)
+            self.layout_engine.append_transcript(text, is_markdown)
             self.app.invalidate()
         except Exception as e:
             self.display_error(f"Error appending transcript: {e}")
