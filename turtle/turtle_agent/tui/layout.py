@@ -1,4 +1,4 @@
-from prompt_toolkit.layout.containers import HSplit, VSplit, Window
+from prompt_toolkit.layout.containers import HSplit, Window, to_container
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.widgets import TextArea, Frame
 from prompt_toolkit.layout.dimension import Dimension
@@ -7,26 +7,50 @@ from prompt_toolkit.completion import WordCompleter
 from prompt_toolkit.data_structures import Point
 from rich.console import Console
 from rich.markdown import Markdown
-from rich.text import Text
 import io
-import re
 import shutil
+
+class ModelPickerControl(FormattedTextControl):
+    def __init__(self, models: list[str], current_model: str = ""):
+        self.models = models
+        self.selected_idx = 0
+        if current_model in models:
+            self.selected_idx = models.index(current_model)
+        super().__init__(text=self._render, focusable=True)
+
+    def _render(self):
+        tokens = [("class:title", "▸ Select Model (Use ↑/↓ arrows, Enter to select, Esc to cancel):\n\n")]
+        for i, m in enumerate(self.models):
+            if i == self.selected_idx:
+                tokens.append(("class:prompt", f"  ❯ {m}\n"))
+            else:
+                tokens.append(("class:title", f"    {m}\n"))
+        return tokens
+
+    def move_up(self):
+        self.selected_idx = max(0, self.selected_idx - 1)
+
+    def move_down(self):
+        self.selected_idx = min(len(self.models) - 1, self.selected_idx + 1)
+
+    def get_selected(self) -> str:
+        if self.models:
+            return self.models[self.selected_idx]
+        return ""
 
 class TurtleLayout:
     def __init__(self):
-        self._transcript_chunks = [(False, "[bold green]Welcome to Turtle TUI![/bold green]")]
+        self._transcript_chunks = [(False, "[#a9b1d6]▸[/] [#7aa2f7]Turtle Engine[/]\n  [#565f89]└─[/] [#9ece6a]System healthy[/]\n")]
         
         self.completer = WordCompleter([
             '/help', '/tree', '/checkout', '/undo', '/models', 
             '/model', '/clear', '/compact', '/exit', '/quit'
         ], ignore_case=True)
         
-        # M-5: read terminal width dynamically so output is not clipped or over-wrapped
         term_width = max(80, min(shutil.get_terminal_size((120, 24)).columns, 240))
-        self.console = Console(file=io.StringIO(), force_terminal=True, color_system="truecolor", width=term_width)
+        self.console = Console(file=io.StringIO(), force_terminal=True, color_system="truecolor", width=term_width - 4)
         self._rendered_lines = 1
         
-        # 1. Transcript Area (Read-only history)
         self.transcript_control = FormattedTextControl(
             text=ANSI(self._get_rendered_ansi()),
             focusable=True
@@ -40,10 +64,9 @@ class TurtleLayout:
             scroll_offsets=None
         )
         
-        # 2. Input Area
         self.input_area = TextArea(
             height=Dimension(min=3, max=10),
-            prompt="trtl> ",
+            prompt=HTML("<prompt>▸ </prompt>"),
             multiline=True,
             wrap_lines=True,
             scrollbar=True,
@@ -51,25 +74,44 @@ class TurtleLayout:
             complete_while_typing=True,
         )
         
-        # 3. Footer
-        self.footer_text = FormattedTextControl(text=HTML("<b>Turtle</b> | Use <style bg='ansiyellow' fg='ansiblack'>Alt+Enter</style> for newline, <style bg='ansiyellow' fg='ansiblack'>Enter</style> to submit, <style bg='ansiyellow' fg='ansiblack'>Ctrl+C</style> to exit"))
+        self.input_frame = Frame(
+            body=self.input_area,
+            style="class:input-frame"
+        )
+        
+        self.bottom_container = HSplit([self.input_frame])
+        
+        self.footer_text = FormattedTextControl(text=HTML(" NORMAL | <style fg='#7aa2f7'>main</style> | <style fg='#565f89'>Disconnected</style>"))
         self.footer_window = Window(
             content=self.footer_text,
             height=Dimension.exact(1),
             style="class:status-toolbar"
         )
         
-        # 4. Main Layout Container
         self.container = HSplit([
-            self.transcript_area,
-            Window(height=1, char='-', style="class:line"),
-            self.input_area,
+            Frame(
+                body=self.transcript_area,
+                title=HTML("<title> Turtle Session </title>"),
+                style="class:transcript-frame"
+            ),
+            self.bottom_container,
             self.footer_window
         ])
+        
+        self.picker_control = None
+
+    def show_model_picker(self, models: list[str], current_model: str = ""):
+        self.picker_control = ModelPickerControl(models, current_model)
+        h = max(min(len(models) + 3, 14), 5)
+        picker_window = Window(content=self.picker_control, height=Dimension(min=h, max=h))
+        picker_frame = Frame(body=picker_window, title=HTML("<title> Model Selector </title>"), style="class:input-frame")
+        self.bottom_container.children = [to_container(picker_frame)]
+
+    def hide_model_picker(self):
+        self.picker_control = None
+        self.bottom_container.children = [to_container(self.input_frame)]
 
     def _get_rendered_ansi(self):
-        # H-2: replace the StringIO entirely instead of truncate+seek.
-        # truncate(0) does not free the internal buffer; replacement does.
         self.console.file = io.StringIO()
         
         for is_md, chunk in self._transcript_chunks:
@@ -86,7 +128,6 @@ class TurtleLayout:
     def append_transcript(self, text: str, is_markdown: bool = False):
         self._transcript_chunks.append((is_markdown, text))
         
-        # Prevent unbounded memory growth
         if len(self._transcript_chunks) > 2000:
             self._transcript_chunks = self._transcript_chunks[-2000:]
             
@@ -95,7 +136,7 @@ class TurtleLayout:
         self.transcript_control.text = ANSI(ansi_str)
         
     def update_footer(self, text: str):
-        self.footer_text.text = HTML(text)
+        self.footer_text.text = HTML(f" {text}")
         
     def update_completer(self, models: list):
         commands = [

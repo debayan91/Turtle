@@ -6,10 +6,13 @@ from prompt_toolkit.styles import Style
 from turtle_agent.tui.layout import TurtleLayout
 from turtle_agent.tui.keybindings import create_keybindings
 
-# Add some nice styles matching the pi-tui aesthetics
 style = Style([
-    ('status-toolbar', 'bg:#333333 #ffffff'),
-    ('line', '#888888'),
+    ('status-toolbar', 'bg:#16161e #a9b1d6'),
+    ('line', '#292e42'),
+    ('transcript-frame', '#292e42'),
+    ('input-frame', '#292e42'),
+    ('prompt', '#7aa2f7 bold'),
+    ('title', '#a9b1d6 bold'),
 ])
 
 class TurtleTUI:
@@ -18,42 +21,68 @@ class TurtleTUI:
         self.layout_engine = TurtleLayout()
         self.exit_callback = exit_callback
         self.interrupt_callback = interrupt_callback
-        
+        self._picker_future: asyncio.Future | None = None
+
         self.keybindings = create_keybindings(
             submit_callback=self._on_submit,
             exit_callback=self._on_exit,
-            interrupt_callback=self._on_interrupt
+            interrupt_callback=self._on_interrupt,
+            picker_select_callback=self._on_picker_select,
+            picker_cancel_callback=self._on_picker_cancel,
+            layout_engine=self.layout_engine
         )
-        
+
+        self.layout = Layout(self.layout_engine.container, focused_element=self.layout_engine.input_area)
+
         self.app = Application(
-            layout=Layout(self.layout_engine.container, focused_element=self.layout_engine.input_area),
+            layout=self.layout,
             key_bindings=self.keybindings,
             style=style,
             full_screen=True,
             mouse_support=True
         )
-        
+
     def _on_submit(self, text: str):
-        # We push to the async queue. We use put_nowait since it's an unbounded queue.
         try:
             self.input_queue.put_nowait(text)
         except Exception as e:
             self.display_error(f"Error submitting input: {e}")
-            
+
     def _on_exit(self):
         try:
-            self.input_queue.put_nowait("/exit")
-            self.exit_callback()
+            if not self.app.is_done:
+                self.app.exit()
         except Exception:
             pass
-        self.app.exit()
-        
+
     def _on_interrupt(self):
         if self.interrupt_callback:
             self.interrupt_callback()
 
+    def _on_picker_select(self, model: str):
+        self.layout_engine.hide_model_picker()
+        self.layout.focus(self.layout_engine.input_area)
+        if self._picker_future and not self._picker_future.done():
+            self._picker_future.set_result(model)
+        self.app.invalidate()
+
+    def _on_picker_cancel(self):
+        self.layout_engine.hide_model_picker()
+        self.layout.focus(self.layout_engine.input_area)
+        if self._picker_future and not self._picker_future.done():
+            self._picker_future.set_result(None)
+        self.app.invalidate()
+
+    async def prompt_model_picker(self, models: list[str], current_model: str = "") -> str | None:
+        """Asynchronously show the model picker and await user selection."""
+        loop = asyncio.get_running_loop()
+        self._picker_future = loop.create_future()
+        self.layout_engine.show_model_picker(models, current_model)
+        self.layout.focus(self.layout_engine.picker_control)
+        self.app.invalidate()
+        return await self._picker_future
+
     async def run_async(self):
-        """Starts the TUI application asynchronously."""
         try:
             await self.app.run_async()
         except Exception as e:
@@ -61,19 +90,16 @@ class TurtleTUI:
             traceback.print_exc()
 
     def append_transcript(self, text: str, is_markdown: bool = False):
-        """Thread-safe and async-safe way to append text to the transcript."""
-        # Using call_from_executor or directly since prompt_toolkit 3.0 handles updates during run_async.
         try:
             self.layout_engine.append_transcript(text, is_markdown)
             self.app.invalidate()
         except Exception as e:
             self.display_error(f"Error appending transcript: {e}")
-            
+
     def display_error(self, error_msg: str):
-        """The pinnacle of error handling: beautifully surface errors without crashing."""
-        formatted_error = f"\n[!] ERROR: {error_msg}\n"
+        formatted_error = f"\n[#f7768e]✗ ERROR:[/] [#a9b1d6]{error_msg}[/]\n"
         try:
             self.layout_engine.append_transcript(formatted_error)
             self.app.invalidate()
         except Exception:
-            pass # Failsafe
+            pass

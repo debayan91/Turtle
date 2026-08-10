@@ -1,8 +1,7 @@
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.filters import Condition
 import time
 
-def create_keybindings(submit_callback, exit_callback, interrupt_callback):
+def create_keybindings(submit_callback, exit_callback, interrupt_callback, picker_select_callback=None, picker_cancel_callback=None, layout_engine=None):
     kb = KeyBindings()
     
     last_interrupt_time = 0
@@ -10,14 +9,16 @@ def create_keybindings(submit_callback, exit_callback, interrupt_callback):
     @kb.add('c-c')
     def _(event):
         nonlocal last_interrupt_time
-        
-        # If the editor has text, clear it first
-        if event.current_buffer.text:
+        if layout_engine and layout_engine.picker_control and event.app.layout.has_focus(layout_engine.picker_control):
+            if picker_cancel_callback:
+                picker_cancel_callback()
+            return
+
+        if event.current_buffer and event.current_buffer.text:
             event.current_buffer.text = ''
             return
             
         now = time.time()
-        # If double pressed within 1 sec when empty, exit
         if now - last_interrupt_time < 1.0:
             exit_callback()
         else:
@@ -25,23 +26,44 @@ def create_keybindings(submit_callback, exit_callback, interrupt_callback):
             if interrupt_callback:
                 interrupt_callback()
 
+    @kb.add('up')
+    @kb.add('k')
+    def _(event):
+        if layout_engine and layout_engine.picker_control and event.app.layout.has_focus(layout_engine.picker_control):
+            layout_engine.picker_control.move_up()
+            event.app.invalidate()
+
+    @kb.add('down')
+    @kb.add('j')
+    def _(event):
+        if layout_engine and layout_engine.picker_control and event.app.layout.has_focus(layout_engine.picker_control):
+            layout_engine.picker_control.move_down()
+            event.app.invalidate()
+
     @kb.add('escape')
     def _(event):
-        """Send an interrupt signal on Escape."""
+        if layout_engine and layout_engine.picker_control and event.app.layout.has_focus(layout_engine.picker_control):
+            if picker_cancel_callback:
+                picker_cancel_callback()
+            return
         if interrupt_callback:
             interrupt_callback()
 
     @kb.add('enter')
     def _(event):
-        """Submit the input when Enter is pressed."""
-        # Only submit if the buffer has text
-        if event.current_buffer.text.strip():
+        if layout_engine and layout_engine.picker_control and event.app.layout.has_focus(layout_engine.picker_control):
+            selected = layout_engine.picker_control.get_selected()
+            if picker_select_callback:
+                picker_select_callback(selected)
+            return
+
+        if event.current_buffer and event.current_buffer.text.strip():
             submit_callback(event.current_buffer.text)
             event.current_buffer.text = ''
 
     @kb.add('escape', 'enter')
     def _(event):
-        """Alt+Enter as an alternative for Shift-Enter on some terminals."""
-        event.current_buffer.insert_text('\n')
+        if event.current_buffer:
+            event.current_buffer.insert_text('\n')
 
     return kb
