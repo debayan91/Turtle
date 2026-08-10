@@ -215,6 +215,19 @@ async def run_agent():
 
     tui = TurtleTUI(input_queue=input_queue, exit_callback=_exit_cb, interrupt_callback=_interrupt_cb)
 
+    def update_ui_footer():
+        tui.layout_engine.update_footer(f"<b>Turtle</b> | Model: <style bg='ansiblack' fg='ansigreen'>{client.model}</style> | Use <style bg='ansiyellow' fg='ansiblack'>Shift+Enter</style> for newline, <style bg='ansiyellow' fg='ansiblack'>Ctrl+C</style> to exit")
+
+    update_ui_footer()
+
+    async def init_models():
+        models = await client.get_models()
+        if models:
+            tui.layout_engine.update_completer(models)
+            tui.app.invalidate()
+    
+    asyncio.create_task(init_models())
+
     tui.append_transcript("[bold green]Turtle Agent initialized (Fast TUI Mode)[/bold green]")
     if not state.nodes:
         sys_prompt = "You are Turtle, an ultra-fast local CLI coding agent. You can use the provided tools to interact with the file system and execute commands.\n"
@@ -334,25 +347,29 @@ async def run_agent():
                             tui.append_transcript("[bold yellow]Already at root node.[/bold yellow]")
                         continue
                     elif cmd == "/models":
-                        tui.append_transcript("[bold cyan]Supported Providers & Models:[/bold cyan]\n- [bold]antigravity[/bold]: gemini-3.5-pro, claude-3.5-sonnet-experimental (e.g. /model antigravity:gemini-3.5-pro)\n- [bold]openai[/bold]: gpt-4o, gpt-4o-mini (e.g. /model openai:gpt-4o)\n- [bold]anthropic[/bold]: claude-3-5-sonnet (e.g. /model anthropic:claude-3-5-sonnet)\n- [bold]deepseek[/bold]: deepseek-coder, deepseek-chat (e.g. /model deepseek:deepseek-coder)\n- [bold]openrouter[/bold], [bold]groq[/bold], [bold]together[/bold] are also supported.")
+                        tui.append_transcript("[bold cyan]Fetching available models...[/bold cyan]")
+                        models = await client.get_models()
+                        if models:
+                            model_list = "\n".join([f" - [bold green]{m}[/bold green]" for m in models])
+                            tui.append_transcript(f"[bold cyan]Available Antigravity Models:[/bold cyan]\n{model_list}")
+                            tui.layout_engine.update_completer(models)
+                        else:
+                            tui.append_transcript("[bold red]No models found. Check if the local server is running.[/bold red]")
                         continue
                     elif cmd == "/model":
                         parts = user_input.strip().split()
                         if len(parts) < 2:
-                            tui.append_transcript(f"[bold cyan]Current model:[/bold cyan] {client.provider}:{client.model}")
+                            tui.append_transcript(f"[bold cyan]Current model:[/bold cyan] {client.model}")
                             continue
                         
-                        model_str = parts[1]
-                        if ":" in model_str:
-                            provider, model = model_str.split(":", 1)
-                        else:
-                            provider, model = "openai", model_str
-                        
+                        new_model = parts[1]
                         try:
-                            new_client = LLMClient(provider=provider, model=model)
+                            # Re-initialize the client with the new model but same provider (antigravity)
+                            new_client = LLMClient(provider=client.provider, model=new_model, api_key=client.api_key, base_url=client.base_url)
                             await client.close()
                             client = new_client
-                            tui.append_transcript(f"[bold green]Switched model to {provider}:{model}[/bold green]")
+                            update_ui_footer()
+                            tui.append_transcript(f"[bold green]Switched model to {new_model}[/bold green]")
                         except Exception as e:
                             tui.display_error(f"Failed to switch model: {e}")
                         
@@ -451,10 +468,14 @@ async def run_agent():
                                         current_tool_calls[tc.index] = {
                                             "id": tc.id,
                                             "type": "function",
-                                            "function": {"name": tc.function.name, "arguments": ""}
+                                            "function": {"name": "", "arguments": ""}
                                         }
-                                    if tc.function and tc.function.arguments:
-                                        current_tool_calls[tc.index]["function"]["arguments"] += tc.function.arguments
+                                    
+                                    if tc.function:
+                                        if tc.function.name:
+                                            current_tool_calls[tc.index]["function"]["name"] += tc.function.name
+                                        if tc.function.arguments:
+                                            current_tool_calls[tc.index]["function"]["arguments"] += tc.function.arguments
                     except Exception as e:
                         tui.display_error(f"Error during generation: {e}")
                         current_tool_calls = {}  # Discard incomplete tool calls

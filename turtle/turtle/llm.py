@@ -36,7 +36,7 @@ PROVIDERS = {
 }
 
 class LLMClient:
-    def __init__(self, provider: str = "openai", model: str = "gpt-4o-mini", api_key: Optional[str] = None, base_url: Optional[str] = None):
+    def __init__(self, provider: str = "antigravity", model: str = "gemini-3.5-flash-low", api_key: Optional[str] = None, base_url: Optional[str] = None):
         self.provider = provider
         self.model = model
         
@@ -59,17 +59,21 @@ class LLMClient:
                     print(f"Warning: Could not read {auth_file}: {e}")
             
             # Try Environment Variable
+            env_key = f"{self.provider.upper()}_API_KEY"
             if not self.api_key and "env" in provider_config:
                 self.api_key = os.getenv(provider_config["env"])
+            elif not self.api_key:
+                self.api_key = os.getenv(env_key)
+                
+        # 2. Resolve Base URL
+        env_base_url = f"{self.provider.upper()}_BASE_URL"
+        self.base_url = base_url or os.getenv(env_base_url) or os.getenv("OPENAI_BASE_URL") or provider_config.get("url", "https://api.openai.com/v1")
                 
         if not self.api_key:
-            if self.provider == "antigravity":
-                self.api_key = "antigravity-local"
+            if "localhost" in self.base_url or "127.0.0.1" in self.base_url:
+                self.api_key = "local-dummy-key"
             else:
-                raise ValueError(f"API key for provider '{self.provider}' is missing. Please set it in ~/.pi/agent/auth.json or via environment variable.")
-        
-        # 2. Resolve Base URL
-        self.base_url = base_url or os.getenv("OPENAI_BASE_URL") or provider_config.get("url", "https://api.openai.com/v1")
+                raise ValueError(f"API key for provider '{self.provider}' is missing. Please set it in ~/.pi/agent/auth.json or via {provider_config.get('env', env_key)}.")
         
         # Keep connection open and persistent, use HTTP/2
         self.client = httpx.AsyncClient(
@@ -82,6 +86,16 @@ class LLMClient:
             timeout=httpx.Timeout(120.0)
         )
         self.decoder = msgspec.json.Decoder(ChatCompletionChunk)
+
+    async def get_models(self) -> List[str]:
+        """Fetch available models from the provider's /models endpoint."""
+        try:
+            response = await self.client.get("/models")
+            response.raise_for_status()
+            data = response.json()
+            return [m["id"] for m in data.get("data", [])]
+        except Exception:
+            return []
 
     async def stream_chat(self, messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]] = None) -> AsyncGenerator[ChatCompletionChunk, None]:
         payload = {

@@ -3,11 +3,17 @@ from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.widgets import TextArea, Frame
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.completion import WordCompleter
 import re
 
 class TurtleLayout:
     def __init__(self):
         self._transcript_chunks = ["Welcome to Turtle TUI!\n"]
+        
+        self.completer = WordCompleter([
+            '/help', '/tree', '/checkout', '/undo', '/models', 
+            '/model', '/clear', '/compact', '/exit', '/quit'
+        ], ignore_case=True)
         
         # 1. Transcript Area (Read-only history)
         self.transcript_area = TextArea(
@@ -25,6 +31,8 @@ class TurtleLayout:
             multiline=True,
             wrap_lines=True,
             scrollbar=True,
+            completer=self.completer,
+            complete_while_typing=True,
         )
         
         # 3. Footer
@@ -57,3 +65,11 @@ class TurtleLayout:
         
     def update_footer(self, text: str):
         self.footer_text.text = HTML(text)
+        
+    def update_completer(self, models: list):
+        commands = [
+            '/help', '/tree', '/checkout', '/undo', '/models', 
+            '/model', '/clear', '/compact', '/exit', '/quit'
+        ]
+        model_commands = [f"/model {m}" for m in models]
+        self.completer.words = commands + model_commands

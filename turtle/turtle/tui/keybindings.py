@@ -39,11 +39,6 @@ def create_keybindings(submit_callback, exit_callback, interrupt_callback):
             submit_callback(event.current_buffer.text)
             event.current_buffer.text = ''
 
-    @kb.add('s-enter')
-    def _(event):
-        """Insert a newline when Shift-Enter is pressed."""
-        event.current_buffer.insert_text('\n')
-        
     @kb.add('escape', 'enter')
     def _(event):
         """Alt+Enter as an alternative for Shift-Enter on some terminals."""
