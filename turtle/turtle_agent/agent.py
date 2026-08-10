@@ -216,7 +216,7 @@ async def run_agent():
     tui = TurtleTUI(input_queue=input_queue, exit_callback=_exit_cb, interrupt_callback=_interrupt_cb)
 
     def update_ui_footer():
-        tui.layout_engine.update_footer(f"<b>Turtle</b> | Model: <style bg='ansiblack' fg='ansigreen'>{client.model}</style> | Use <style bg='ansiyellow' fg='ansiblack'>Shift+Enter</style> for newline, <style bg='ansiyellow' fg='ansiblack'>Ctrl+C</style> to exit")
+        tui.layout_engine.update_footer(f"<b>Turtle</b> | Model: <style bg='ansiblack' fg='ansigreen'>{client.model}</style> | Use <style bg='ansiyellow' fg='ansiblack'>Alt+Enter</style> for newline, <style bg='ansiyellow' fg='ansiblack'>Ctrl+C</style> to exit")
 
     update_ui_footer()
 

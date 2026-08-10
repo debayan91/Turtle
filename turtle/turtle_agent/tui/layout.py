@@ -36,7 +36,7 @@ class TurtleLayout:
         )
         
         # 3. Footer
-        self.footer_text = FormattedTextControl(text=HTML("<b>Turtle</b> | Use <style bg='ansiyellow' fg='ansiblack'>Shift+Enter</style> for newline, <style bg='ansiyellow' fg='ansiblack'>Enter</style> to submit, <style bg='ansiyellow' fg='ansiblack'>Ctrl+C</style> to exit"))
+        self.footer_text = FormattedTextControl(text=HTML("<b>Turtle</b> | Use <style bg='ansiyellow' fg='ansiblack'>Alt+Enter</style> for newline, <style bg='ansiyellow' fg='ansiblack'>Enter</style> to submit, <style bg='ansiyellow' fg='ansiblack'>Ctrl+C</style> to exit"))
         self.footer_window = Window(
             content=self.footer_text,
             height=Dimension.exact(1),
@@ -62,6 +62,7 @@ class TurtleLayout:
             self._transcript_chunks = self._transcript_chunks[-2000:]
             
         self.transcript_area.text = "".join(self._transcript_chunks)
+        self.transcript_area.buffer.cursor_position = len(self.transcript_area.text)
         
     def update_footer(self, text: str):
         self.footer_text.text = HTML(text)
