@@ -205,11 +205,15 @@ async def run_agent():
     except ValueError:
         client = LLMClient(provider="antigravity", model="gemini-3.5-pro")
     input_queue = asyncio.Queue()
+    interrupt_event = asyncio.Event()
 
     def _exit_cb():
         pass  # Rely on app.exit() to stop the TUI cleanly
+        
+    def _interrupt_cb():
+        interrupt_event.set()
 
-    tui = TurtleTUI(input_queue=input_queue, exit_callback=_exit_cb)
+    tui = TurtleTUI(input_queue=input_queue, exit_callback=_exit_cb, interrupt_callback=_interrupt_cb)
 
     tui.append_transcript("[bold green]Turtle Agent initialized (Fast TUI Mode)[/bold green]")
     if not state.nodes:
@@ -248,6 +252,7 @@ async def run_agent():
         nonlocal client
         while True:
             try:
+                interrupt_event.clear()
                 user_input = await input_queue.get()
                 
                 # Slash Commands
@@ -419,6 +424,13 @@ async def run_agent():
                     interrupted = False
                     try:
                         async for chunk in client.stream_chat(state.get_messages(), tools=TOOLS_SCHEMA):
+                            if interrupt_event.is_set():
+                                tui.append_transcript("\n[bold yellow]Agent generation interrupted by user.[/bold yellow]")
+                                interrupted = True
+                                interrupt_event.clear()
+                                current_tool_calls = {}
+                                break
+                                
                             if not input_queue.empty():
                                 tui.append_transcript("\n[bold yellow]Interrupting generation for steering message...[/bold yellow]")
                                 interrupted = True
@@ -459,6 +471,12 @@ async def run_agent():
                     
                     if tool_calls_list:
                         for tc in tool_calls_list:
+                            if interrupt_event.is_set():
+                                tui.append_transcript("\n[bold yellow]Tool execution queue interrupted by user.[/bold yellow]")
+                                interrupted = True
+                                interrupt_event.clear()
+                                break
+                                
                             if not input_queue.empty():
                                 tui.append_transcript("\n[bold yellow]Interrupting tools for steering message...[/bold yellow]")
                                 interrupted = True
@@ -469,11 +487,35 @@ async def run_agent():
                             tui.append_transcript(f"[dim]Executing tool: {name}({arguments})[/dim]")
                             
                             try:
-                                result = await execute_tool(name, arguments)
-                                result_str = str(result)
-                                display_result = result_str[:200] + "..." if len(result_str) > 200 else result_str
-                                tui.append_transcript(f"[dim]Tool result: {display_result.strip()}[/dim]")
-                                await state.append_message("tool", content=result_str, tool_call_id=tc["id"], name=name)
+                                tool_task = asyncio.create_task(execute_tool(name, arguments))
+                                interrupt_task = asyncio.create_task(interrupt_event.wait())
+                                
+                                done, pending = await asyncio.wait(
+                                    [tool_task, interrupt_task],
+                                    return_when=asyncio.FIRST_COMPLETED
+                                )
+                                
+                                if interrupt_task in done:
+                                    tool_task.cancel()
+                                    tui.append_transcript("\n[bold yellow]Tool execution aborted![/bold yellow]")
+                                    err_msg = f"Tool {name} aborted by user interrupt."
+                                    await state.append_message("tool", content=err_msg, tool_call_id=tc["id"], name=name)
+                                    interrupted = True
+                                    interrupt_event.clear()
+                                    
+                                    # Wait for cancellation to complete safely without raising
+                                    try:
+                                        await tool_task
+                                    except asyncio.CancelledError:
+                                        pass
+                                    break
+                                else:
+                                    interrupt_task.cancel()
+                                    result = tool_task.result()
+                                    result_str = str(result)
+                                    display_result = result_str[:200] + "..." if len(result_str) > 200 else result_str
+                                    tui.append_transcript(f"[dim]Tool result: {display_result.strip()}[/dim]")
+                                    await state.append_message("tool", content=result_str, tool_call_id=tc["id"], name=name)
                             except Exception as e:
                                 err_msg = f"Tool {name} failed: {e}"
                                 tui.display_error(err_msg)

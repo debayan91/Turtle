@@ -13,14 +13,16 @@ style = Style([
 ])
 
 class TurtleTUI:
-    def __init__(self, input_queue: asyncio.Queue, exit_callback):
+    def __init__(self, input_queue: asyncio.Queue, exit_callback, interrupt_callback=None):
         self.input_queue = input_queue
         self.layout_engine = TurtleLayout()
         self.exit_callback = exit_callback
+        self.interrupt_callback = interrupt_callback
         
         self.keybindings = create_keybindings(
             submit_callback=self._on_submit,
-            exit_callback=self._on_exit
+            exit_callback=self._on_exit,
+            interrupt_callback=self._on_interrupt
         )
         
         self.app = Application(
@@ -45,6 +47,10 @@ class TurtleTUI:
         except Exception:
             pass
         self.app.exit()
+        
+    def _on_interrupt(self):
+        if self.interrupt_callback:
+            self.interrupt_callback()
 
     async def run_async(self):
         """Starts the TUI application asynchronously."""

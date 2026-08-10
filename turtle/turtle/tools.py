@@ -276,6 +276,12 @@ async def execute_bash(command: str) -> str:
         except OSError:
             pass
         return f"Error: Command timed out after 120 seconds."
+    except asyncio.CancelledError:
+        try:
+            os.killpg(os.getpgid(process.pid), 9)
+        except OSError:
+            pass
+        raise
     except Exception as e:
         return f"Error executing bash: {str(e)}"
 
