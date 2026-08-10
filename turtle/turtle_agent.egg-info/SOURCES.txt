@@ -1,4 +1,14 @@
 pyproject.toml
+turtle/__init__.py
+turtle/__main__.py
+turtle/agent.py
+turtle/llm.py
+turtle/mcp_server.py
+turtle/tools.py
+turtle/tui/__init__.py
+turtle/tui/app.py
+turtle/tui/keybindings.py
+turtle/tui/layout.py
 turtle_agent.egg-info/PKG-INFO
 turtle_agent.egg-info/SOURCES.txt
 turtle_agent.egg-info/dependency_links.txt
