@@ -1,8 +1,6 @@
 #!/Users/debayan/Documents/projects/turtle/turtle/venv/bin/python3.14
 import sys
-# Insert the project root to prevent namespace collision with Python's built-in turtle module
-sys.path.insert(0, '/Users/debayan/Documents/projects/turtle/turtle')
-from turtle.__main__ import main
+from turtle_agent.__main__ import main
 if __name__ == '__main__':
     sys.argv[0] = sys.argv[0].removesuffix('.exe')
     sys.exit(main())

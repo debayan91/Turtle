@@ -1,6 +1,6 @@
 from mcp.server.fastmcp import FastMCP
 import asyncio
-from turtle.agent import Agent
+from turtle_agent.agent import Agent
 
 mcp = FastMCP("Turtle-Fast-Agent")
 turtle_agent = Agent()

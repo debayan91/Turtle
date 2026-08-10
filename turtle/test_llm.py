@@ -1,6 +1,6 @@
 import asyncio
 import sys
-from turtle.llm import LLMClient
+from turtle_agent.llm import LLMClient
 
 async def test():
     client = LLMClient(provider="antigravity", model="gemini-3.5-flash-low")

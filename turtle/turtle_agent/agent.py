@@ -5,11 +5,11 @@ import uuid
 from rich.console import Console
 import re
 
-from turtle.tui import TurtleTUI
+from turtle_agent.tui import TurtleTUI
 import re
 
-from turtle.llm import LLMClient
-from turtle.tools import TOOLS_SCHEMA, execute_tool
+from turtle_agent.llm import LLMClient
+from turtle_agent.tools import TOOLS_SCHEMA, execute_tool
 
 STATE_FILE = "state.jsonl"
 console = Console()

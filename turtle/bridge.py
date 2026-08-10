@@ -1,6 +1,6 @@
 import sys
 import asyncio
-from turtle.agent import Agent
+from turtle_agent.agent import Agent
 
 async def run_turtle_headless(prompt: str):
     agent = Agent()

@@ -3,8 +3,8 @@ import traceback
 from prompt_toolkit import Application
 from prompt_toolkit.layout.layout import Layout
 from prompt_toolkit.styles import Style
-from turtle.tui.layout import TurtleLayout
-from turtle.tui.keybindings import create_keybindings
+from turtle_agent.tui.layout import TurtleLayout
+from turtle_agent.tui.keybindings import create_keybindings
 
 # Add some nice styles matching the pi-tui aesthetics
 style = Style([

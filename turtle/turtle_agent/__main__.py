@@ -3,7 +3,7 @@ import sys
 
 import uvloop
 
-from turtle.agent import run_agent
+from turtle_agent.agent import run_agent
 
 def main():
     # Install uvloop as the default event loop policy
