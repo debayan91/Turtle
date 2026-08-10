@@ -75,7 +75,10 @@ class LLMClient:
             else:
                 raise ValueError(f"API key for provider '{self.provider}' is missing. Please set it in ~/.pi/agent/auth.json or via {provider_config.get('env', env_key)}.")
         
-        # Keep connection open and persistent, use HTTP/2
+        # Keep connection open and persistent, use HTTP/2.
+        # H-3: bound the connection pool to avoid FD exhaustion.
+        # H-3: use per-phase timeout: connect/write are bounded, read is unlimited
+        #       so long-running LLM streams never get killed mid-response.
         self.client = httpx.AsyncClient(
             base_url=self.base_url,
             headers={
@@ -83,7 +86,8 @@ class LLMClient:
                 "Content-Type": "application/json"
             },
             http2=True,
-            timeout=httpx.Timeout(120.0)
+            timeout=httpx.Timeout(connect=10.0, read=None, write=10.0, pool=10.0),
+            limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
         )
         self.decoder = msgspec.json.Decoder(ChatCompletionChunk)
 

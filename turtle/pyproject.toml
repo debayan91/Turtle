@@ -12,4 +12,8 @@ dependencies = [
 ]
 
 [project.scripts]
-turtle = "turtle_agent.__main__:main"
+trtl = "turtle_agent.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"

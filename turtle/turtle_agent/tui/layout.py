@@ -10,6 +10,7 @@ from rich.markdown import Markdown
 from rich.text import Text
 import io
 import re
+import shutil
 
 class TurtleLayout:
     def __init__(self):
@@ -20,7 +21,9 @@ class TurtleLayout:
             '/model', '/clear', '/compact', '/exit', '/quit'
         ], ignore_case=True)
         
-        self.console = Console(file=io.StringIO(), force_terminal=True, color_system="truecolor", width=120)
+        # M-5: read terminal width dynamically so output is not clipped or over-wrapped
+        term_width = max(80, min(shutil.get_terminal_size((120, 24)).columns, 240))
+        self.console = Console(file=io.StringIO(), force_terminal=True, color_system="truecolor", width=term_width)
         self._rendered_lines = 1
         
         # 1. Transcript Area (Read-only history)
@@ -40,7 +43,7 @@ class TurtleLayout:
         # 2. Input Area
         self.input_area = TextArea(
             height=Dimension(min=3, max=10),
-            prompt="turtle> ",
+            prompt="trtl> ",
             multiline=True,
             wrap_lines=True,
             scrollbar=True,
@@ -65,8 +68,9 @@ class TurtleLayout:
         ])
 
     def _get_rendered_ansi(self):
-        self.console.file.truncate(0)
-        self.console.file.seek(0)
+        # H-2: replace the StringIO entirely instead of truncate+seek.
+        # truncate(0) does not free the internal buffer; replacement does.
+        self.console.file = io.StringIO()
         
         for is_md, chunk in self._transcript_chunks:
             if is_md:

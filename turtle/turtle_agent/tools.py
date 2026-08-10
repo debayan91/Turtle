@@ -170,7 +170,10 @@ async def handle_write(args: dict) -> str:
     content = args.get("content", "")
     
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        # C-5: os.path.dirname returns '' for a bare filename; makedirs('') raises FileNotFoundError
+        parent_dir = os.path.dirname(path)
+        if parent_dir:
+            os.makedirs(parent_dir, exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             f.write(content)
         return f"Successfully wrote to {path}"
@@ -253,13 +256,15 @@ async def handle_grep(args: dict) -> str:
     if not pattern:
         return "Error: pattern is required"
         
-    cmd = f"grep -rnw {shlex.quote(path)} -e {shlex.quote(pattern)}"
+    # M-7: removed -w (whole-word only); use substring matching which is the expected default
+    cmd = f"grep -rn {shlex.quote(path)} -e {shlex.quote(pattern)}"
     if include:
         cmd += f" --include={shlex.quote(include)}"
         
     return await execute_bash(cmd)
 
 async def execute_bash(command: str) -> str:
+    process = None  # H-4: ensure process is always bound before the except block references it
     try:
         process = await asyncio.create_subprocess_shell(
             command,
@@ -271,16 +276,18 @@ async def execute_bash(command: str) -> str:
         stdout, _ = await asyncio.wait_for(process.communicate(), timeout=120.0)
         return truncate_output(stdout.decode("utf-8", errors="replace"))
     except asyncio.TimeoutError:
-        try:
-            os.killpg(os.getpgid(process.pid), 9)
-        except OSError:
-            pass
+        if process is not None:
+            try:
+                os.killpg(os.getpgid(process.pid), 9)
+            except OSError:
+                pass
         return f"Error: Command timed out after 120 seconds."
     except asyncio.CancelledError:
-        try:
-            os.killpg(os.getpgid(process.pid), 9)
-        except OSError:
-            pass
+        if process is not None:
+            try:
+                os.killpg(os.getpgid(process.pid), 9)
+            except OSError:
+                pass
         raise
     except Exception as e:
         return f"Error executing bash: {str(e)}"

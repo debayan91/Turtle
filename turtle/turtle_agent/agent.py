@@ -1,18 +1,32 @@
 import asyncio
 import json
+import logging
 import os
-import uuid
-from rich.console import Console
 import re
+import tempfile
+import uuid
 
 from turtle_agent.tui import TurtleTUI
-import re
-
 from turtle_agent.llm import LLMClient
 from turtle_agent.tools import TOOLS_SCHEMA, execute_tool
 
-STATE_FILE = "state.jsonl"
-console = Console()
+# ---------------------------------------------------------------------------
+# State file path – absolute, under ~/.trtl/ so it is always the same
+# regardless of which directory `trtl` is launched from.  (M-3)
+# ---------------------------------------------------------------------------
+_STATE_DIR = os.path.expanduser("~/.trtl")
+os.makedirs(_STATE_DIR, exist_ok=True)
+STATE_FILE = os.path.join(_STATE_DIR, "state.jsonl")
+
+# ---------------------------------------------------------------------------
+# Structured logging to a file; avoids polluting the TUI with log noise.
+# ---------------------------------------------------------------------------
+logging.basicConfig(
+    filename=os.path.join(_STATE_DIR, "turtle.log"),
+    level=logging.WARNING,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+log = logging.getLogger(__name__)
 
 SUMMARIZATION_SYSTEM_PROMPT = """You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.
 
@@ -109,54 +123,123 @@ def discover_skills() -> str:
     lines.append("</available_skills>")
     return "\n".join(lines)
 
+
+def _build_system_prompt(load_warnings: list) -> str:
+    """Build the system prompt by loading AGENTS.md, .pi/prompts, and skills.
+    Single source of truth for both run_agent() and Agent (deduplicates context loading).
+    """
+    sys_prompt = (
+        "You are Turtle, an ultra-fast local CLI coding agent. "
+        "You can use the provided tools to interact with the file system and execute commands.\n"
+    )
+    context_paths = ["AGENTS.md", ".pi/prompts"]
+    for c_path in context_paths:
+        if not os.path.exists(c_path):
+            continue
+        if os.path.isdir(c_path):
+            for root, _, files in os.walk(c_path):
+                for file in files:
+                    if not file.endswith(".md"):
+                        continue
+                    fpath = os.path.join(root, file)
+                    try:
+                        with open(fpath, "r", encoding="utf-8") as f:
+                            sys_prompt += f"\n--- Context from {fpath} ---\n{f.read()}\n"
+                    except Exception as exc:
+                        log.warning("Could not read context file %s: %s", fpath, exc)
+        else:
+            try:
+                with open(c_path, "r", encoding="utf-8") as f:
+                    sys_prompt += f"\n--- Context from {c_path} ---\n{f.read()}\n"
+            except Exception as exc:
+                log.warning("Could not read context file %s: %s", c_path, exc)
+
+    sys_prompt += discover_skills()
+    if load_warnings:
+        sys_prompt += "\n\n--- System Warnings ---\n" + "\n".join(load_warnings)
+    return sys_prompt
+
+
 class AgentState:
-    def __init__(self):
-        self.nodes = {}
-        self.current_node_id = None
-        self.load_warnings = []
+    def __init__(self, state_file: str = STATE_FILE):
+        self.state_file = state_file
+        self.nodes: dict = {}
+        self.current_node_id: str | None = None
+        self.load_warnings: list[str] = []
+        self._lock = asyncio.Lock()  # C-2: created eagerly in __init__
         self._load_state()
 
-    def get_lock(self):
-        if not hasattr(self, '_lock'):
-            self._lock = asyncio.Lock()
-        return self._lock
+    def _load_state(self) -> None:
+        if not os.path.exists(self.state_file):
+            return
+        corrupt = False
+        with open(self.state_file, "r", encoding="utf-8") as f:
+            for line_idx, line in enumerate(f):
+                if not line.strip():
+                    continue
+                try:
+                    msg = json.loads(line)
+                    if "id" not in msg:
+                        raise ValueError("Missing 'id' field")
+                    self.nodes[msg["id"]] = msg
+                    self.current_node_id = msg["id"]
+                except (json.JSONDecodeError, ValueError) as exc:
+                    self.load_warnings.append(
+                        f"Warning: Corrupt line {line_idx + 1} in {self.state_file}: {exc}"
+                    )
+                    corrupt = True
+                except Exception as exc:
+                    self.load_warnings.append(f"Error loading state: {exc}")
+        if corrupt:
+            self.load_warnings.append(
+                f"Warning: {self.state_file} has corrupt lines; they are ignored."
+            )
 
-    def _load_state(self):
-        if os.path.exists(STATE_FILE):
-            corrupt = False
-            with open(STATE_FILE, "r") as f:
-                for line_idx, line in enumerate(f):
-                    if line.strip():
-                        try:
-                            msg = json.loads(line)
-                            self.nodes[msg["id"]] = msg
-                            self.current_node_id = msg["id"]
-                        except json.JSONDecodeError:
-                            self.load_warnings.append(f"Warning: Corrupt line {line_idx+1} in {STATE_FILE}.")
-                            corrupt = True
-                        except Exception as e:
-                            self.load_warnings.append(f"Error loading state: {e}")
-            if corrupt:
-                self.load_warnings.append(f"Warning: {STATE_FILE} contains corrupted lines. The agent will ignore them but continue.")
+    def has_valid_system_root(self) -> bool:
+        """H-7: verify that the resumed state tree has a system message at its root."""
+        if not self.nodes:
+            return False
+        visited: set[str] = set()
+        current = self.current_node_id
+        while current:
+            if current in visited:
+                return False  # cycle detected
+            visited.add(current)
+            node = self.nodes.get(current)
+            if node is None:
+                return False
+            parent = node.get("parent_id")
+            if not parent:
+                return node.get("role") == "system"
+            current = parent
+        return False
 
-    def get_messages(self, head_id=None) -> list:
+    def get_messages(self, head_id: str | None = None) -> list:
         current = head_id or self.current_node_id
         messages = []
+        seen: set[str] = set()  # C-6: cycle detection
         while current:
+            if current in seen:
+                log.error("Cycle in state graph at node %s; stopping traversal", current)
+                break
+            seen.add(current)
             msg = self.nodes.get(current)
             if not msg:
                 break
-            
-            # Filter out id and parent_id when passing to LLM
             clean_msg = {k: v for k, v in msg.items() if k not in ("id", "parent_id")}
             messages.append(clean_msg)
             current = msg.get("parent_id")
         return messages[::-1]
 
-    def get_lineage(self, head_id=None) -> list:
+    def get_lineage(self, head_id: str | None = None) -> list:
         current = head_id or self.current_node_id
         nodes = []
+        seen: set[str] = set()  # C-6: cycle detection
         while current:
+            if current in seen:
+                log.error("Cycle in state graph at node %s; stopping traversal", current)
+                break
+            seen.add(current)
             msg = self.nodes.get(current)
             if not msg:
                 break
@@ -164,13 +247,16 @@ class AgentState:
             current = msg.get("parent_id")
         return nodes[::-1]
 
-    async def append_message(self, role: str, content: str | None = None, tool_calls: list = None, tool_call_id: str = None, name: str = None) -> str:
+    async def append_message(
+        self,
+        role: str,
+        content: str | None = None,
+        tool_calls: list | None = None,
+        tool_call_id: str | None = None,
+        name: str | None = None,
+    ) -> str:
         msg_id = uuid.uuid4().hex[:8]
-        msg = {
-            "id": msg_id,
-            "parent_id": self.current_node_id,
-            "role": role
-        }
+        msg: dict = {"id": msg_id, "parent_id": self.current_node_id, "role": role}
         if content is not None:
             msg["content"] = content
         if tool_calls is not None:
@@ -180,23 +266,48 @@ class AgentState:
         if name is not None:
             msg["name"] = name
 
+        # C-1: Atomic write – copy existing file + new line to a temp file, then rename.
+        def _write() -> None:
+            state_dir = os.path.dirname(self.state_file)
+            try:
+                fd, tmp_path = tempfile.mkstemp(dir=state_dir, suffix=".tmp")
+                try:
+                    existing = ""
+                    if os.path.exists(self.state_file):
+                        with open(self.state_file, "r", encoding="utf-8") as src:
+                            existing = src.read()
+                    with os.fdopen(fd, "w", encoding="utf-8") as dst:
+                        dst.write(existing)
+                        dst.write(json.dumps(msg) + "\n")
+                    os.replace(tmp_path, self.state_file)
+                except Exception:
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+                    raise
+            except OSError as exc:
+                log.error("Failed to persist message to %s: %s", self.state_file, exc)
+                raise
+
+        # C-1: Update in-memory state only AFTER the disk write succeeds.
+        async with self._lock:
+            await asyncio.to_thread(_write)
+
         self.nodes[msg_id] = msg
         self.current_node_id = msg_id
-        
-        # Append to file in a separate thread to avoid blocking the async event loop
-        def _write():
-            try:
-                with open(STATE_FILE, "a") as f:
-                    f.write(json.dumps(msg) + "\n")
-            except OSError as e:
-                # If we fail to write state, we log to stdout. 
-                # This ensures the process loop doesn't crash entirely on a disk-full error, 
-                # though it means state won't persist.
-                print(f"\n[!] WARNING: Failed to write to {STATE_FILE}: {e}")
-        
-        async with self.get_lock():
-            await asyncio.to_thread(_write)
         return msg_id
+
+    async def reset(self) -> None:
+        """Clear in-memory state and delete the persisted state file."""
+        async with self._lock:
+            def _delete():
+                if os.path.exists(self.state_file):
+                    os.remove(self.state_file)
+            await asyncio.to_thread(_delete)
+        self.nodes = {}
+        self.current_node_id = None
+        self.load_warnings = []
 
 async def run_agent():
     state = AgentState()
@@ -228,38 +339,14 @@ async def run_agent():
     
     asyncio.create_task(init_models())
 
-    tui.append_transcript("[bold green]Turtle Agent initialized (Fast TUI Mode)[/bold green]")
-    if not state.nodes:
-        sys_prompt = "You are Turtle, an ultra-fast local CLI coding agent. You can use the provided tools to interact with the file system and execute commands.\n"
-        
-        # Context Ingestion
-        context_paths = ["AGENTS.md", ".pi/prompts"]
-        for c_path in context_paths:
-            if os.path.exists(c_path):
-                if os.path.isdir(c_path):
-                    for root, _, files in os.walk(c_path):
-                        for file in files:
-                            if file.endswith(".md"):
-                                fpath = os.path.join(root, file)
-                                try:
-                                    with open(fpath, "r", encoding="utf-8") as f:
-                                        sys_prompt += f"\n--- Context from {fpath} ---\n{f.read()}\n"
-                                except Exception:
-                                    pass
-                else:
-                    try:
-                        with open(c_path, "r", encoding="utf-8") as f:
-                            sys_prompt += f"\n--- Context from {c_path} ---\n{f.read()}\n"
-                    except Exception:
-                        pass
-        
-        # Skills Discovery & Injection
-        sys_prompt += discover_skills()
-        
-        if state.load_warnings:
-            sys_prompt += "\n\n--- System Warnings ---\n" + "\n".join(state.load_warnings)
-        
+    tui.append_transcript("[bold green]Turtle Agent initialized[/bold green]")
+    # Use has_valid_system_root to handle resumed sessions with missing system node (H-7)
+    if not state.nodes or not state.has_valid_system_root():
+        sys_prompt = _build_system_prompt(state.load_warnings)
         await state.append_message("system", sys_prompt)
+    elif state.load_warnings:
+        for w in state.load_warnings:
+            tui.append_transcript(f"[bold yellow]{w}[/bold yellow]")
 
     async def process_loop():
         nonlocal client
@@ -375,12 +462,10 @@ async def run_agent():
                         
                         continue
                     elif cmd == "/clear":
-                        state.nodes = {}
-                        state.current_node_id = None
-                        async with state.get_lock():
-                            if os.path.exists(STATE_FILE):
-                                os.remove(STATE_FILE)
-                        tui.append_transcript("[bold yellow]Session cleared. Restart agent to re-load context.[/bold yellow]")
+                        await state.reset()  # M-4: also re-init system prompt so the next message has context
+                        sys_prompt = _build_system_prompt([])
+                        await state.append_message("system", sys_prompt)
+                        tui.append_transcript("[bold yellow]Session cleared.[/bold yellow]")
                         continue
                     elif cmd == "/compact":
                         lineage = state.get_lineage()
@@ -403,6 +488,8 @@ async def run_agent():
                             {"role": "user", "content": prompt_text}
                         ]
                         
+                        saved_head = state.current_node_id  # C-4: save before any mutation
+                        system_msg = lineage[0]
                         summary = ""
                         try:
                             async for chunk in client.stream_chat(summarization_messages):
@@ -411,17 +498,14 @@ async def run_agent():
                                 if delta.content:
                                     summary += delta.content
                             
-                            system_msg = lineage[0]
-                            old_head = state.current_node_id
                             state.current_node_id = system_msg["id"]
-                            
                             new_head = await state.append_message("assistant", content=f"## Context Checkpoint\n\n{summary}")
                             state.current_node_id = new_head
                             
                             tui.append_transcript("[bold green]History compacted successfully into new branch.[/bold green]")
                         except Exception as e:
                             tui.display_error(f"Compaction failed: {e}")
-                            state.current_node_id = old_head
+                            state.current_node_id = saved_head  # C-4: always restore
                         continue
                     elif cmd in ("/exit", "/quit"):
                         tui.app.exit()
@@ -484,7 +568,6 @@ async def run_agent():
                     if assistant_content:
                         tui.append_transcript("[bold blue]Turtle:[/bold blue]")
                         tui.append_transcript(assistant_content, is_markdown=True)
-                        tui.append_transcript("")
                     
                     tool_calls_list = list(current_tool_calls.values()) if current_tool_calls else None
                     await state.append_message("assistant", content=assistant_content or None, tool_calls=tool_calls_list)
@@ -520,20 +603,28 @@ async def run_agent():
                                 
                                 if interrupt_task in done:
                                     tool_task.cancel()
-                                    tui.append_transcript("\n[bold yellow]Tool execution aborted![/bold yellow]")
-                                    err_msg = f"Tool {name} aborted by user interrupt."
-                                    await state.append_message("tool", content=err_msg, tool_call_id=tc["id"], name=name)
-                                    interrupted = True
-                                    interrupt_event.clear()
-                                    
-                                    # Wait for cancellation to complete safely without raising
                                     try:
                                         await tool_task
                                     except asyncio.CancelledError:
                                         pass
+                                    # M-8: await interrupt_task to prevent 'destroyed pending task' warning
+                                    try:
+                                        await interrupt_task
+                                    except asyncio.CancelledError:
+                                        pass
+                                    tui.append_transcript("\n[bold yellow]Tool execution aborted.[/bold yellow]")
+                                    err_msg = f"Tool {name} aborted by user interrupt."
+                                    await state.append_message("tool", content=err_msg, tool_call_id=tc["id"], name=name)
+                                    interrupted = True
+                                    interrupt_event.clear()
                                     break
                                 else:
+                                    # M-8: cancel and await interrupt_task to prevent resource leak
                                     interrupt_task.cancel()
+                                    try:
+                                        await interrupt_task
+                                    except asyncio.CancelledError:
+                                        pass
                                     result = tool_task.result()
                                     result_str = str(result)
                                     display_result = result_str[:200] + "..." if len(result_str) > 200 else result_str
@@ -565,6 +656,9 @@ async def run_agent():
         
         for task in pending:
             task.cancel()
+        # M-10: wait for cancelled tasks to finish cleanup before closing the HTTP client
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
     finally:
         await client.close()
 
@@ -572,51 +666,28 @@ class Agent:
     """
     Headless Agent API for Antigravity JSON Hooks and MCP.
     """
-    def __init__(self):
+    def __init__(self) -> None:
         self.state = AgentState()
         try:
             self.client = LLMClient()
         except ValueError:
             self.client = LLMClient(provider="antigravity", model="gemini-3.5-pro")
-        self._system_initialized = bool(self.state.nodes)
-        
-    async def _initialize_system_prompt(self):
-        sys_prompt = "You are Turtle, an ultra-fast local CLI coding agent. You can use the provided tools to interact with the file system and execute commands.\n"
-        context_paths = ["AGENTS.md", ".pi/prompts"]
-        for c_path in context_paths:
-            if os.path.exists(c_path):
-                if os.path.isdir(c_path):
-                    for root, _, files in os.walk(c_path):
-                        for file in files:
-                            if file.endswith(".md"):
-                                fpath = os.path.join(root, file)
-                                try:
-                                    with open(fpath, "r", encoding="utf-8") as f:
-                                        sys_prompt += f"\n--- Context from {fpath} ---\n{f.read()}\n"
-                                except Exception:
-                                    pass
-                else:
-                    try:
-                        with open(c_path, "r", encoding="utf-8") as f:
-                            sys_prompt += f"\n--- Context from {c_path} ---\n{f.read()}\n"
-                    except Exception:
-                        pass
-        sys_prompt += discover_skills()
-        
-        if self.state.load_warnings:
-            sys_prompt += "\n\n--- System Warnings ---\n" + "\n".join(self.state.load_warnings)
-            
+        # H-7: verify the resumed state actually has a valid system root
+        self._system_initialized = self.state.has_valid_system_root()
+
+    async def _initialize_system_prompt(self) -> None:
+        sys_prompt = _build_system_prompt(self.state.load_warnings)
         await self.state.append_message("system", sys_prompt)
         self._system_initialized = True
-        
-    async def close(self):
+
+    async def close(self) -> None:
         if self.client:
             await self.client.close()
 
     async def run_single_turn(self, prompt: str) -> str:
         if not self._system_initialized:
             await self._initialize_system_prompt()
-            
+
         await self.state.append_message("user", prompt)
         
         final_response = ""

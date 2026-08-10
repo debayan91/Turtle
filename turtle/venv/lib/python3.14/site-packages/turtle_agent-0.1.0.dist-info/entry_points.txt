@@ -1,2 +1,2 @@
 [console_scripts]
-turtle = turtle_agent.__main__:main
+trtl = turtle_agent.__main__:main

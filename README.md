@@ -41,7 +41,7 @@ pip install -e .
 To launch the Turtle agent, simply run:
 
 ```bash
-turtle
+trtl
 ```
 
 Alternatively, you can run it via the Python module:
