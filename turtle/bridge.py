@@ -1,14 +1,11 @@
-import sys
 import asyncio
-from turtle_agent.agent import Agent
+import sys
+from turtle_agent import Agent
 
-async def run_turtle_headless(prompt: str):
+async def run_bridge():
     agent = Agent()
-    # Process prompt using turtle's uvloop + httpx engine
-    response = await agent.run_single_turn(prompt)
-    print(response)
+    print("Bridge interface mock running...")
+    await agent.close()
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        prompt = " ".join(sys.argv[1:])
-        asyncio.run(run_turtle_headless(prompt))
+    asyncio.run(run_bridge())

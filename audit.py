@@ -1,10 +1,11 @@
 import asyncio
 import sys
-from turtle_agent.agent import run_agent, AgentState
-from turtle_agent.tui.app import TurtleTUI
-from turtle_agent.llm import LLMClient
-from turtle_agent.tools import execute_tool, TOOLS_SCHEMA
 import traceback
+from turtle_agent.core.workspace import WorkspaceState
+from turtle_agent.client.headless import Agent
+from turtle_agent.core.llm import LLMClient
+from turtle_agent.tools.registry import execute_tool, TOOLS_SCHEMA
+from turtle_agent.tui.app import TurtleTUI
 
 def log_msg(file, msg):
     print(msg)
@@ -16,11 +17,9 @@ async def run_audit(log_path):
         
         try:
             log_msg(f, "1. Architecture Audit (State Trees, Concurrency)")
-            import turtle_agent.agent
-            turtle_agent.agent.STATE_FILE = "test_state.jsonl"
-            state = AgentState()
-            state.append_message("user", "test")
-            log_msg(f, "   [PASS] AgentState initialization and append successful.")
+            state = WorkspaceState("test_workspace")
+            await state.append_message("user", "test")
+            log_msg(f, "   [PASS] WorkspaceState initialization and append successful.")
         except Exception as e:
             log_msg(f, f"   [FAIL] Architecture: {e}")
             log_msg(f, traceback.format_exc())
@@ -51,6 +50,14 @@ async def run_audit(log_path):
 
         log_msg(f, "4. Commands & UX (TUI Initialization)")
         log_msg(f, "   [PASS] TUI keybindings verified earlier (s-enter removed).")
+        
+        try:
+            log_msg(f, "5. Headless Agent Wrapper")
+            agent = Agent("test_workspace")
+            log_msg(f, "   [PASS] Headless agent instantiates successfully.")
+        except Exception as e:
+            log_msg(f, f"   [FAIL] Headless Agent Wrapper: {e}")
+            log_msg(f, traceback.format_exc())
 
         log_msg(f, "--- AUDIT COMPLETE ---")
 

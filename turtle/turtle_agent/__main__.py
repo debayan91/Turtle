@@ -3,14 +3,13 @@ import sys
 
 import uvloop
 
-from turtle_agent.agent import run_agent
+from .client.tui_client import run_agent_client
 
 def main():
-    # Install uvloop as the default event loop policy
     uvloop.install()
     
     try:
-        asyncio.run(run_agent())
+        asyncio.run(run_agent_client())
     except KeyboardInterrupt:
         print("\nExiting turtle agent.")
         sys.exit(0)

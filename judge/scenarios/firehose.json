@@ -1,0 +1,6 @@
+{
+    "type": "firehose",
+    "total_tokens": 50000,
+    "chunk_size": 100,
+    "text": "benchmark "
+}

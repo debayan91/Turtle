@@ -1,0 +1,8 @@
+{
+    "type": "ping_pong",
+    "count": 100,
+    "tool_name": "run_command",
+    "tool_args": {
+        "command": "echo 'hello'"
+    }
+}

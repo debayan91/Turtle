@@ -2,9 +2,9 @@ import asyncio
 import os
 import sys
 
-from turtle_agent.agent import AgentState
-from turtle_agent.llm import LLMClient
-from turtle_agent.tools import execute_tool, TOOLS_SCHEMA
+from turtle_agent.core.workspace import WorkspaceState
+from turtle_agent.core.llm import LLMClient
+from turtle_agent.tools.registry import execute_tool, TOOLS_SCHEMA
 
 async def test_tool_call_parsing():
     # Simulate tool call stream chunks
