@@ -65,15 +65,10 @@
   },
   "endpoints": {
     "sandbox": [
-      "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse",
-      "https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse",
-      "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:streamGenerateContent?alt=sse",
-      "https://autopush-cloudcode-pa.sandbox.googleapis.com/v1internal:streamGenerateContent?alt=sse"
+      "https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse"
     ],
     "cli": [
-      "https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse",
-      "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse",
-      "https://autopush-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse"
+      "https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse"
     ]
   },
   "logging": {
@@ -87,9 +82,9 @@
     "sanitizeToolNames": true,
     "pidOffsetEnabled": false,
     "softQuotaThresholdPercent": 90,
-    "jitterEnabled": true,
-    "jitterMinMs": 50,
-    "jitterMaxMs": 300
+    "jitterEnabled": false,
+    "jitterMinMs": 0,
+    "jitterMaxMs": 0
   },
   "scheduling": {
     "mode": "cache_first",

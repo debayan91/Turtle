@@ -83,7 +83,9 @@ class LLMClient:
             base_url=self.base_url,
             headers={
                 "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json"
+                "Content-Type": "application/json",
+                "Accept": "text/event-stream",
+                "X-Accel-Buffering": "no",
             },
             http2=True,
             timeout=httpx.Timeout(connect=10.0, read=None, write=10.0, pool=10.0),
@@ -110,27 +112,44 @@ class LLMClient:
         if tools:
             payload["tools"] = tools
 
-        # Stream the SSE response
+        # Stream the SSE response using raw bytes for zero-buffering latency.
+        # httpx's aiter_lines() internally buffers until a full \n arrives in
+        # its internal buffer, which can stall when the proxy flushes partial
+        # TCP segments.  aiter_bytes() yields data the instant it arrives on
+        # the socket, and we split SSE lines manually.
         try:
             async with self.client.stream("POST", "/chat/completions", content=msgspec.json.encode(payload)) as response:
                 response.raise_for_status()
-                async for line in response.aiter_lines():
-                    if line.startswith("data: "):
-                        data_str = line[6:]
-                        if data_str == "[DONE]":
-                            break
-                        try:
-                            chunk = self.decoder.decode(data_str.encode("utf-8"))
-                            yield chunk
-                        except msgspec.DecodeError:
-                            pass # Ignore malformed chunks
+                buf = b""
+                async for raw in response.aiter_bytes():
+                    buf += raw
+                    # Process all complete lines in the buffer
+                    while b"\n" in buf:
+                        line_bytes, buf = buf.split(b"\n", 1)
+                        line = line_bytes.decode("utf-8", errors="replace").strip()
+                        if not line:
+                            continue
+                        if line.startswith("data: "):
+                            data_str = line[6:]
+                            if data_str == "[DONE]":
+                                return
+                            try:
+                                chunk = self.decoder.decode(data_str.encode("utf-8"))
+                                yield chunk
+                            except msgspec.DecodeError:
+                                pass  # Ignore malformed chunks
         except httpx.TimeoutException as e:
             raise RuntimeError(f"LLM API request timed out: {e}")
         except httpx.HTTPStatusError as e:
-            error_body = await e.response.aread() if not e.response.is_stream_consumed else b"<stream consumed>"
+            # In a stream context the body may already be consumed/closed.
+            try:
+                error_body = await e.response.aread()
+            except Exception:
+                error_body = b"<stream consumed>"
             raise RuntimeError(f"LLM API returned HTTP {e.response.status_code}: {error_body.decode(errors='replace')}")
         except httpx.RequestError as e:
             raise RuntimeError(f"Network error while connecting to LLM API: {e}")
 
     async def close(self):
         await self.client.aclose()
+

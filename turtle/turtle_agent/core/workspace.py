@@ -65,12 +65,16 @@ class WorkspaceState:
         self._load_session()
 
     def _get_connection(self):
+        """Return a cached persistent connection (WAL mode, FULL sync)."""
+        if hasattr(self, '_conn') and self._conn is not None:
+            return self._conn
         # Enable WAL mode for concurrency, just like pi
         conn = sqlite3.connect(self.db_path, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=FULL")
         conn.execute("PRAGMA busy_timeout=5000")
+        self._conn = conn
         return conn
 
     def _init_db(self):
@@ -154,31 +158,56 @@ class WorkspaceState:
         return False
 
     def get_messages(self, head_id: str | None = None) -> list:
-        current = head_id or self.current_node_id
+        """Reconstruct the message list for the current conversation.
+        
+        Fast path: when head_id is None and the conversation is linear
+        (no branching), a single ORDER BY seq query fetches everything
+        in one round-trip instead of N parent-chasing queries.
+        """
+        if head_id:
+            # Branched lookup — must traverse parent pointers
+            return self._get_messages_by_traversal(head_id)
+        
+        # Fast path: linear history — single indexed query
+        conn = self._get_connection()
+        cursor = conn.execute(
+            "SELECT payload FROM entries WHERE session_id = ? ORDER BY seq ASC",
+            (self.session_id,)
+        )
+        messages = []
+        for row in cursor:
+            payload = json.loads(row["payload"])
+            clean_msg = {k: v for k, v in payload.items() if k not in ("id", "parent_id")}
+            messages.append(clean_msg)
+        return messages
+
+    def _get_messages_by_traversal(self, head_id: str) -> list:
+        """Walk parent pointers from head_id back to root. Used for branched history."""
+        current = head_id
         messages = []
         seen = set()
         
-        with self._get_connection() as conn:
-            while current:
-                if current in seen:
-                    log.error("Cycle in state graph at node %s; stopping traversal", current)
-                    break
-                seen.add(current)
+        conn = self._get_connection()
+        while current:
+            if current in seen:
+                log.error("Cycle in state graph at node %s; stopping traversal", current)
+                break
+            seen.add(current)
+            
+            cursor = conn.execute(
+                "SELECT parent_id, payload FROM entries WHERE session_id = ? AND id = ?",
+                (self.session_id, current)
+            )
+            row = cursor.fetchone()
+            if not row:
+                break
                 
-                cursor = conn.execute(
-                    "SELECT parent_id, payload FROM entries WHERE session_id = ? AND id = ?",
-                    (self.session_id, current)
-                )
-                row = cursor.fetchone()
-                if not row:
-                    break
-                    
-                payload = json.loads(row["payload"])
-                
-                clean_msg = {k: v for k, v in payload.items() if k not in ("id", "parent_id")}
-                messages.append(clean_msg)
-                
-                current = row["parent_id"]
+            payload = json.loads(row["payload"])
+            
+            clean_msg = {k: v for k, v in payload.items() if k not in ("id", "parent_id")}
+            messages.append(clean_msg)
+            
+            current = row["parent_id"]
                 
         return messages[::-1]
 

@@ -14,6 +14,20 @@ from ..tui.app import TurtleTUI
 DAEMON_WS_BASE = "ws://127.0.0.1:8000"
 DAEMON_HTTP_BASE = "http://127.0.0.1:8000"
 
+# ── Persistent HTTP client for daemon communication ────────────────────────────
+# Avoids creating a fresh TCP + HTTP negotiation per /models, /model, /health call.
+_daemon_http: httpx.AsyncClient | None = None
+
+def _get_daemon_client() -> httpx.AsyncClient:
+    global _daemon_http
+    if _daemon_http is None or _daemon_http.is_closed:
+        _daemon_http = httpx.AsyncClient(
+            base_url=DAEMON_HTTP_BASE,
+            timeout=5.0,
+        )
+    return _daemon_http
+
+
 FOOTER_DISCONNECTED = " NORMAL | <style fg='#7aa2f7'>main</style> | <style fg='#f7768e'>Disconnected</style> | <style fg='#565f89'>Alt+Enter: newline, Ctrl+C: exit</style>"
 FOOTER_CONNECTED    = " NORMAL | <style fg='#7aa2f7'>main</style> | <style fg='#9ece6a'>Connected</style> | <style fg='#565f89'>Alt+Enter: newline, Ctrl+C: exit</style>"
 
@@ -23,9 +37,9 @@ FOOTER_CONNECTED    = " NORMAL | <style fg='#7aa2f7'>main</style> | <style fg='#
 async def _daemon_alive() -> bool:
     """Return True if the daemon HTTP health endpoint responds."""
     try:
-        async with httpx.AsyncClient(timeout=1.0) as c:
-            r = await c.get(f"{DAEMON_HTTP_BASE}/health")
-            return r.status_code == 200
+        c = _get_daemon_client()
+        r = await c.get("/health", timeout=1.0)
+        return r.status_code == 200
     except Exception:
         return False
 
@@ -74,10 +88,10 @@ async def ensure_daemon_running(tui: TurtleTUI) -> str:
 async def fetch_models() -> list[str]:
     """Fetch the model list from the daemon's REST endpoint."""
     try:
-        async with httpx.AsyncClient(timeout=5.0) as c:
-            r = await c.get(f"{DAEMON_HTTP_BASE}/models")
-            r.raise_for_status()
-            return r.json().get("models", [])
+        c = _get_daemon_client()
+        r = await c.get("/models")
+        r.raise_for_status()
+        return r.json().get("models", [])
     except Exception:
         return []
 
@@ -125,12 +139,12 @@ async def handle_slash_command(
 
         if selected_model:
             try:
-                async with httpx.AsyncClient(timeout=5.0) as c:
-                    r = await c.post(
-                        f"{DAEMON_HTTP_BASE}/model",
-                        json={"model": selected_model},
-                    )
-                    r.raise_for_status()
+                c = _get_daemon_client()
+                r = await c.post(
+                    "/model",
+                    json={"model": selected_model},
+                )
+                r.raise_for_status()
                 current_model[0] = selected_model
                 tui.append_transcript(
                     f"\n[#a9b1d6]▸[/] [#7aa2f7]Configuration[/]\n"
@@ -144,10 +158,10 @@ async def handle_slash_command(
 
     if verb == "/clear":
         try:
-            async with httpx.AsyncClient(timeout=5.0) as c:
-                qs = urllib.parse.quote(os.getcwd())
-                r = await c.post(f"{DAEMON_HTTP_BASE}/clear?workspace_dir={qs}")
-                r.raise_for_status()
+            c = _get_daemon_client()
+            qs = urllib.parse.quote(os.getcwd())
+            r = await c.post(f"/clear?workspace_dir={qs}")
+            r.raise_for_status()
         except Exception:
             pass
         tui.append_transcript(
